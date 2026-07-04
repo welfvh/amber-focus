@@ -1,0 +1,29 @@
+{
+  "name": "amber-focus",
+  "version": "3.0.0",
+  "description": "Multi-layer macOS distraction blocker with AI-powered vigilant mode",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "npx tsx src/server.ts",
+    "build": "tsc && npm run build:daemon",
+    "build:server": "tsc",
+    "build:daemon": "esbuild src/daemon/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=daemon/daemon.cjs",
+    "daemon": "sudo node daemon/daemon.cjs",
+    "redeploy": "./scripts/redeploy.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@types/http-proxy": "^1.17.17",
+    "express": "^4.21.0",
+    "http-proxy": "^1.18.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

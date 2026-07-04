@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# amber-focus CLI — opens an interactive Claude Code session for focus management.
+# Routes through Claude so the intent-checking protocol applies.
+#
+# Usage:
+#   amber focus status          → check shield status
+#   amber focus x 5             → request x.com unblocked for 5 min
+#   amber focus reddit 10       → request reddit.com unblocked for 10 min
+#   amber focus block tiktok    → block a domain
+#   amber focus                 → open session for general focus management
+
+set -euo pipefail
+
+DOMAIN="${1:-}"
+DURATION="${2:-}"
+
+if [[ -z "$DOMAIN" ]]; then
+    exec claude --dangerously-skip-permissions --allowedTools '*' \
+        -- "Use /amber-focus. Show me current shield status and active allowances."
+elif [[ "$DOMAIN" == "status" ]]; then
+    curl -s localhost:8053/status | python3 -m json.tool
+    exit 0
+elif [[ "$DOMAIN" == "block" ]]; then
+    BLOCK_TARGET="${2:-}"
+    if [[ -z "$BLOCK_TARGET" ]]; then
+        echo "Usage: amber focus block <domain>"
+        exit 1
+    fi
+    exec claude --dangerously-skip-permissions --allowedTools '*' \
+        -- "Use /amber-focus. User wants to block ${BLOCK_TARGET}."
+else
+    # Grant request — domain + optional duration
+    if [[ -n "$DURATION" ]]; then
+        exec claude --dangerously-skip-permissions --allowedTools '*' \
+            -- "Use /amber-focus. User wants to unblock ${DOMAIN} for ${DURATION} minutes."
+    else
+        exec claude --dangerously-skip-permissions --allowedTools '*' \
+            -- "Use /amber-focus. User wants to unblock ${DOMAIN}."
+    fi
+fi

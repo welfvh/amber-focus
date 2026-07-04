@@ -1,0 +1,613 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		389465C82FDAC3A300D59AEB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 389465C72FDAC3A300D59AEB /* AppDelegate.swift */; };
+		389465CC2FDAC3A300D59AEB /* Main.html in Resources */ = {isa = PBXBuildFile; fileRef = 389465CA2FDAC3A300D59AEB /* Main.html */; };
+		389465CE2FDAC3A300D59AEB /* Icon.png in Resources */ = {isa = PBXBuildFile; fileRef = 389465CD2FDAC3A300D59AEB /* Icon.png */; };
+		389465D02FDAC3A300D59AEB /* Style.css in Resources */ = {isa = PBXBuildFile; fileRef = 389465CF2FDAC3A300D59AEB /* Style.css */; };
+		389465D22FDAC3A300D59AEB /* Script.js in Resources */ = {isa = PBXBuildFile; fileRef = 389465D12FDAC3A300D59AEB /* Script.js */; };
+		389465D42FDAC3A300D59AEB /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 389465D32FDAC3A300D59AEB /* ViewController.swift */; };
+		389465D72FDAC3A300D59AEB /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 389465D52FDAC3A300D59AEB /* Main.storyboard */; };
+		389465D92FDAC3A400D59AEB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 389465D82FDAC3A400D59AEB /* Assets.xcassets */; };
+		389465E02FDAC3A400D59AEB /* Amber Focus Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 389465DF2FDAC3A400D59AEB /* Amber Focus Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		389465E52FDAC3A400D59AEB /* SafariWebExtensionHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 389465E42FDAC3A400D59AEB /* SafariWebExtensionHandler.swift */; };
+		389465F52FDAC3A400D59AEB /* popup.js in Resources */ = {isa = PBXBuildFile; fileRef = 389465F12FDAC3A400D59AEB /* popup.js */; };
+		389465F62FDAC3A400D59AEB /* images in Resources */ = {isa = PBXBuildFile; fileRef = 389465F22FDAC3A400D59AEB /* images */; };
+		389465F72FDAC3A400D59AEB /* popup.html in Resources */ = {isa = PBXBuildFile; fileRef = 389465F32FDAC3A400D59AEB /* popup.html */; };
+		389465F82FDAC3A400D59AEB /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 389465F42FDAC3A400D59AEB /* manifest.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		389465E12FDAC3A400D59AEB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 389465BC2FDAC3A300D59AEB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 389465DE2FDAC3A400D59AEB;
+			remoteInfo = "Amber Focus Extension";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		389465EC2FDAC3A400D59AEB /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				389465E02FDAC3A400D59AEB /* Amber Focus Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		389465C42FDAC3A300D59AEB /* Amber Focus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Amber Focus.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		389465C72FDAC3A300D59AEB /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		389465CB2FDAC3A300D59AEB /* Base */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = Base; path = Base.lproj/Main.html; sourceTree = "<group>"; };
+		389465CD2FDAC3A300D59AEB /* Icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Icon.png; sourceTree = "<group>"; };
+		389465CF2FDAC3A300D59AEB /* Style.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = Style.css; sourceTree = "<group>"; };
+		389465D12FDAC3A300D59AEB /* Script.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = Script.js; sourceTree = "<group>"; };
+		389465D32FDAC3A300D59AEB /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
+		389465D62FDAC3A300D59AEB /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		389465D82FDAC3A400D59AEB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		389465DA2FDAC3A400D59AEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		389465DF2FDAC3A400D59AEB /* Amber Focus Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Amber Focus Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		389465E42FDAC3A400D59AEB /* SafariWebExtensionHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafariWebExtensionHandler.swift; sourceTree = "<group>"; };
+		389465E62FDAC3A400D59AEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		389465F12FDAC3A400D59AEB /* popup.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = popup.js; path = ../../../extension/popup.js; sourceTree = "<group>"; };
+		389465F22FDAC3A400D59AEB /* images */ = {isa = PBXFileReference; lastKnownFileType = folder; name = images; path = ../../../extension/images; sourceTree = "<group>"; };
+		389465F32FDAC3A400D59AEB /* popup.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = popup.html; path = ../../../extension/popup.html; sourceTree = "<group>"; };
+		389465F42FDAC3A400D59AEB /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = manifest.json; path = ../../../extension/manifest.json; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		389465C12FDAC3A300D59AEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		389465DC2FDAC3A400D59AEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		389465BB2FDAC3A300D59AEB = {
+			isa = PBXGroup;
+			children = (
+				389465C62FDAC3A300D59AEB /* Amber Focus */,
+				389465E32FDAC3A400D59AEB /* Amber Focus Extension */,
+				389465C52FDAC3A300D59AEB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		389465C52FDAC3A300D59AEB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				389465C42FDAC3A300D59AEB /* Amber Focus.app */,
+				389465DF2FDAC3A400D59AEB /* Amber Focus Extension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		389465C62FDAC3A300D59AEB /* Amber Focus */ = {
+			isa = PBXGroup;
+			children = (
+				389465C72FDAC3A300D59AEB /* AppDelegate.swift */,
+				389465D32FDAC3A300D59AEB /* ViewController.swift */,
+				389465D52FDAC3A300D59AEB /* Main.storyboard */,
+				389465D82FDAC3A400D59AEB /* Assets.xcassets */,
+				389465DA2FDAC3A400D59AEB /* Info.plist */,
+				389465C92FDAC3A300D59AEB /* Resources */,
+			);
+			path = "Amber Focus";
+			sourceTree = "<group>";
+		};
+		389465C92FDAC3A300D59AEB /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				389465CA2FDAC3A300D59AEB /* Main.html */,
+				389465CD2FDAC3A300D59AEB /* Icon.png */,
+				389465CF2FDAC3A300D59AEB /* Style.css */,
+				389465D12FDAC3A300D59AEB /* Script.js */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		389465E32FDAC3A400D59AEB /* Amber Focus Extension */ = {
+			isa = PBXGroup;
+			children = (
+				389465F02FDAC3A400D59AEB /* Resources */,
+				389465E42FDAC3A400D59AEB /* SafariWebExtensionHandler.swift */,
+				389465E62FDAC3A400D59AEB /* Info.plist */,
+			);
+			path = "Amber Focus Extension";
+			sourceTree = "<group>";
+		};
+		389465F02FDAC3A400D59AEB /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				389465F12FDAC3A400D59AEB /* popup.js */,
+				389465F22FDAC3A400D59AEB /* images */,
+				389465F32FDAC3A400D59AEB /* popup.html */,
+				389465F42FDAC3A400D59AEB /* manifest.json */,
+			);
+			name = Resources;
+			path = "Amber Focus Extension";
+			sourceTree = SOURCE_ROOT;
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		389465C32FDAC3A300D59AEB /* Amber Focus */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 389465ED2FDAC3A400D59AEB /* Build configuration list for PBXNativeTarget "Amber Focus" */;
+			buildPhases = (
+				389465C02FDAC3A300D59AEB /* Sources */,
+				389465C12FDAC3A300D59AEB /* Frameworks */,
+				389465C22FDAC3A300D59AEB /* Resources */,
+				389465EC2FDAC3A400D59AEB /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				389465E22FDAC3A400D59AEB /* PBXTargetDependency */,
+			);
+			name = "Amber Focus";
+			packageProductDependencies = (
+			);
+			productName = "Amber Focus";
+			productReference = 389465C42FDAC3A300D59AEB /* Amber Focus.app */;
+			productType = "com.apple.product-type.application";
+		};
+		389465DE2FDAC3A400D59AEB /* Amber Focus Extension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 389465E92FDAC3A400D59AEB /* Build configuration list for PBXNativeTarget "Amber Focus Extension" */;
+			buildPhases = (
+				389465DB2FDAC3A400D59AEB /* Sources */,
+				389465DC2FDAC3A400D59AEB /* Frameworks */,
+				389465DD2FDAC3A400D59AEB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Amber Focus Extension";
+			packageProductDependencies = (
+			);
+			productName = "Amber Focus Extension";
+			productReference = 389465DF2FDAC3A400D59AEB /* Amber Focus Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		389465BC2FDAC3A300D59AEB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					389465C32FDAC3A300D59AEB = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					389465DE2FDAC3A400D59AEB = {
+						CreatedOnToolsVersion = 26.5;
+					};
+				};
+			};
+			buildConfigurationList = 389465BF2FDAC3A300D59AEB /* Build configuration list for PBXProject "Amber Focus" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 389465BB2FDAC3A300D59AEB;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 389465C52FDAC3A300D59AEB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				389465C32FDAC3A300D59AEB /* Amber Focus */,
+				389465DE2FDAC3A400D59AEB /* Amber Focus Extension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		389465C22FDAC3A300D59AEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				389465CE2FDAC3A300D59AEB /* Icon.png in Resources */,
+				389465D72FDAC3A300D59AEB /* Main.storyboard in Resources */,
+				389465D22FDAC3A300D59AEB /* Script.js in Resources */,
+				389465CC2FDAC3A300D59AEB /* Main.html in Resources */,
+				389465D92FDAC3A400D59AEB /* Assets.xcassets in Resources */,
+				389465D02FDAC3A300D59AEB /* Style.css in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		389465DD2FDAC3A400D59AEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				389465F82FDAC3A400D59AEB /* manifest.json in Resources */,
+				389465F62FDAC3A400D59AEB /* images in Resources */,
+				389465F72FDAC3A400D59AEB /* popup.html in Resources */,
+				389465F52FDAC3A400D59AEB /* popup.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		389465C02FDAC3A300D59AEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				389465D42FDAC3A300D59AEB /* ViewController.swift in Sources */,
+				389465C82FDAC3A300D59AEB /* AppDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		389465DB2FDAC3A400D59AEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				389465E52FDAC3A400D59AEB /* SafariWebExtensionHandler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		389465E22FDAC3A400D59AEB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 389465DE2FDAC3A400D59AEB /* Amber Focus Extension */;
+			targetProxy = 389465E12FDAC3A400D59AEB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		389465CA2FDAC3A300D59AEB /* Main.html */ = {
+			isa = PBXVariantGroup;
+			children = (
+				389465CB2FDAC3A300D59AEB /* Base */,
+			);
+			name = Main.html;
+			sourceTree = "<group>";
+		};
+		389465D52FDAC3A300D59AEB /* Main.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				389465D62FDAC3A300D59AEB /* Base */,
+			);
+			name = Main.storyboard;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		389465E72FDAC3A400D59AEB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		389465E82FDAC3A400D59AEB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		389465EA2FDAC3A400D59AEB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Amber Focus Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Amber Focus Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = computer.amber.focus.Extension;
+				CODE_SIGN_ENTITLEMENTS = "Amber Focus Extension/Amber Focus Extension.entitlements";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		389465EB2FDAC3A400D59AEB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Amber Focus Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Amber Focus Extension";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = computer.amber.focus.Extension;
+				CODE_SIGN_ENTITLEMENTS = "Amber Focus Extension/Amber Focus Extension.entitlements";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		389465EE2FDAC3A400D59AEB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Amber Focus/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Amber Focus";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = computer.amber.focus;
+				CODE_SIGN_ENTITLEMENTS = "Amber Focus/Amber Focus.entitlements";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		389465EF2FDAC3A400D59AEB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Amber Focus/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Amber Focus";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+					"-framework",
+					WebKit,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = computer.amber.focus;
+				CODE_SIGN_ENTITLEMENTS = "Amber Focus/Amber Focus.entitlements";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		389465BF2FDAC3A300D59AEB /* Build configuration list for PBXProject "Amber Focus" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				389465E72FDAC3A400D59AEB /* Debug */,
+				389465E82FDAC3A400D59AEB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		389465E92FDAC3A400D59AEB /* Build configuration list for PBXNativeTarget "Amber Focus Extension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				389465EA2FDAC3A400D59AEB /* Debug */,
+				389465EB2FDAC3A400D59AEB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		389465ED2FDAC3A400D59AEB /* Build configuration list for PBXNativeTarget "Amber Focus" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				389465EE2FDAC3A400D59AEB /* Debug */,
+				389465EF2FDAC3A400D59AEB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 389465BC2FDAC3A300D59AEB /* Project object */;
+}

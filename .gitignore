@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+app/amber-focus
+app/retreat-enforcer
+!app/amber-focus.swift
+!app/retreat-enforcer.swift
+
+# Generated plists (use .plist.template as source)
+com.amberfocus.server.plist
+daemon/com.amberfocus.daemon.plist

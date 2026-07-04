@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# focus-grant — ONE command to grant a timed amber-focus unblock and verify it took.
+#
+# This is the direct-action tool: once the decision to grant is made (see the
+# classification protocol in the /amber-focus skill + global CLAUDE.md cc-focus rules),
+# this does the entire dance — grant, re-apply if the daemon didn't, flush DNS,
+# verify blocked:false, and open the site — so no scavenger hunt is ever needed again.
+#
+# Usage:
+#   focus-grant <brand-or-domain> [minutes] [reason...]
+#   focus-grant zalando 10 Deutschland Trikot for the WM
+#   focus-grant zalando.de 10            # single explicit domain
+#   focus-grant reddit 10 --vigilant "reading the one rust-async thread"
+#
+# Behaviour:
+#   - A bare brand ("zalando") expands to BOTH zalando.de AND zalando.com
+#     (grants are per exact registrable domain; users hit either TLD).
+#   - A full domain ("zalando.de") grants exactly that one + its sibling TLD if known.
+#   - Default duration: 10 min. Always timed (auto-reblocks) — this tool never uses DELETE.
+#   - --vigilant "<intent>" enables AI screenshot monitoring for high-risk sites.
+#
+# Requires: amber-focus server on :8053 (curl localhost:8053/status). No sudo.
+
+set -uo pipefail
+
+API="http://localhost:8053"
+MIN=10
+REASON=""
+VIGILANT=""
+INTENT=""
+ARG=""
+
+# --- parse args ---------------------------------------------------------------
+if [[ $# -lt 1 ]]; then
+  echo "Usage: focus-grant <brand-or-domain> [minutes] [reason...]   [--vigilant \"intent\"]"
+  exit 1
+fi
+ARG="$1"; shift
+
+# optional numeric minutes as the next token
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then MIN="$1"; shift; fi
+
+# remaining tokens = reason, with --vigilant "intent" pulled out
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --vigilant) VIGILANT="true"; INTENT="${2:-}"; shift 2 ;;
+    *) REASON="${REASON:+$REASON }$1"; shift ;;
+  esac
+done
+[[ -z "$REASON" ]] && REASON="Granted via focus-grant"
+
+# --- preflight ----------------------------------------------------------------
+if ! curl -s -m4 "$API/status" >/dev/null 2>&1; then
+  echo "✗ amber-focus server not reachable on :8053. Is it running? (launchctl list | grep amberfocus)"
+  exit 2
+fi
+
+# --- expand brand → domain list ----------------------------------------------
+# Known sibling TLDs to cover when a bare brand or single TLD is given.
+declare -a DOMAINS=()
+if [[ "$ARG" == *.* ]]; then
+  DOMAINS+=("$ARG")
+  base="${ARG%.*}"; tld="${ARG##*.}"
+  # add the sibling .de/.com if it exists on the blocklist
+  for sib in de com; do
+    [[ "$sib" == "$tld" ]] && continue
+    cand="${base}.${sib}"
+    if curl -s -m4 "$API/api/check/$cand" 2>/dev/null | grep -q '"blocked":true'; then
+      DOMAINS+=("$cand")
+    fi
+  done
+else
+  # bare brand → cover both common TLDs
+  DOMAINS+=("${ARG}.de" "${ARG}.com")
+fi
+
+# --- grant each ---------------------------------------------------------------
+grant_one() {
+  local d="$1"
+  local body
+  if [[ -n "$VIGILANT" ]]; then
+    body=$(printf '{"domain":"%s","minutes":%s,"reason":"%s","vigilant":true,"intent":"%s"}' "$d" "$MIN" "$REASON" "$INTENT")
+  else
+    body=$(printf '{"domain":"%s","minutes":%s,"reason":"%s"}' "$d" "$MIN" "$REASON")
+  fi
+  curl -s -m8 -X POST "$API/api/grant" -H 'Content-Type: application/json' -d "$body"
+}
+
+echo "→ granting ${MIN} min for: ${DOMAINS[*]}  (reason: ${REASON})"
+any_ok=""
+for d in "${DOMAINS[@]}"; do
+  resp=$(grant_one "$d")
+  if echo "$resp" | grep -q '"success":true'; then
+    any_ok="yes"
+  elif echo "$resp" | grep -q 'HARD LOCKED'; then
+    echo "  ✗ $d — HARD LOCKED, refused: $resp"
+  else
+    echo "  ? $d — $resp"
+  fi
+done
+
+# --- flush DNS ----------------------------------------------------------------
+curl -s -m8 -X POST "$API/api/flush-dns" >/dev/null 2>&1
+
+# --- verify + self-heal if the daemon didn't re-apply ------------------------
+reapplied=""
+verify_one() {
+  curl -s -m5 "$API/api/check/$1" 2>/dev/null | grep -q '"blocked":false'
+}
+for d in "${DOMAINS[@]}"; do
+  if ! verify_one "$d"; then
+    if [[ -z "$reapplied" ]]; then
+      # daemon sometimes doesn't re-write /etc/hosts on grant — force one re-apply
+      curl -s -m8 -X POST "$API/api/shield/disable" >/dev/null 2>&1
+      curl -s -m8 -X POST "$API/api/shield/enable"  >/dev/null 2>&1
+      curl -s -m8 -X POST "$API/api/flush-dns"      >/dev/null 2>&1
+      reapplied="yes"
+    fi
+  fi
+done
+
+# --- report -------------------------------------------------------------------
+echo "── result ──"
+all_open="yes"
+for d in "${DOMAINS[@]}"; do
+  line=$(curl -s -m5 "$API/api/check/$d" 2>/dev/null)
+  if echo "$line" | grep -q '"blocked":false'; then
+    echo "  ✓ $d  open (${MIN} min, auto-reblocks)"
+  else
+    echo "  ✗ $d  STILL BLOCKED — $line"
+    all_open=""
+  fi
+done
+
+# --- open the primary site ----------------------------------------------------
+if [[ -n "$any_ok" ]]; then
+  open "https://${DOMAINS[0]}" 2>/dev/null || true
+fi
+
+[[ -n "$all_open" ]] || exit 3
+echo "Done."

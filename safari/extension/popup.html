@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #16130e;
+    --paper: #1e1a13;
+    --ink: #e8dfd0;
+    --soft: #a89878;
+    --soft2: #6e6250;
+    --amber: #f0a832;
+    --amber-dim: #b97f22;
+    --red: #c96a5a;
+    --green: #8aab6f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 320px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 13px/1.45 -apple-system, "SF Pro Text", sans-serif;
+    padding: 16px;
+  }
+  .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--amber);
+         box-shadow: 0 0 8px rgba(240,168,50,.6); align-self: center; flex: none; }
+  h1 { font: 500 15px/1.2 "New York", Georgia, serif; letter-spacing: .01em; }
+  #domain { font: 12px ui-monospace, "SF Mono", monospace; color: var(--amber); word-break: break-all; }
+  #state { font-size: 11px; color: var(--soft2); margin: 6px 0 12px; min-height: 14px; }
+  #state .blocked { color: var(--red); }
+  #state .open { color: var(--green); }
+  textarea {
+    width: 100%; min-height: 76px; resize: vertical;
+    background: var(--paper); color: var(--ink);
+    border: 1px solid #2e2820; border-radius: 8px;
+    padding: 9px 10px; font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--amber-dim); }
+  textarea::placeholder { color: var(--soft2); }
+  .row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  button {
+    background: var(--amber); color: #241a08; border: 0; border-radius: 7px;
+    padding: 7px 14px; font: 600 13px -apple-system, sans-serif; cursor: pointer;
+  }
+  button:hover { background: #ffc04a; }
+  button:disabled { background: var(--soft2); cursor: default; }
+  #note { font-size: 11px; color: var(--soft); flex: 1; }
+  #note.err { color: var(--red); }
+  #note.ok { color: var(--green); }
+  .hint { margin-top: 10px; font-size: 10.5px; color: var(--soft2); }
+</style>
+</head>
+<body>
+  <div class="head"><div class="dot"></div><h1>ask amber</h1><span id="domain">…</span></div>
+  <div id="state"></div>
+  <textarea id="case" placeholder="Make your case — what exactly do you need here, and for how long?"></textarea>
+  <div class="row">
+    <span id="note"></span>
+    <button id="send">Send to Amber</button>
+  </div>
+  <div class="hint">Sends into the Amber overlay chat — argue it out there. Draft is kept until delivery is confirmed.</div>
+  <script src="popup.js"></script>
+</body>
+</html>

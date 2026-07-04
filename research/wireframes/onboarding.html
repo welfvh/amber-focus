@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amber Focus — Onboarding</title>
+<script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    color: #d4d4d4;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .screen {
+    display: none;
+    min-height: 100vh;
+    padding: 80px 40px 40px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  .screen.active { display: block; }
+
+  /* Progress */
+  .progress {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: #1a1a1a;
+    z-index: 100;
+  }
+  .progress-fill {
+    height: 100%;
+    background: #d4a026;
+    transition: width 0.4s ease;
+  }
+  .step-indicator {
+    position: fixed;
+    top: 16px; right: 24px;
+    color: #555;
+    font-size: 12px;
+    z-index: 100;
+  }
+
+  /* Typography */
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #e8e8e8;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .subtitle {
+    color: #777;
+    margin-bottom: 48px;
+    font-size: 13px;
+  }
+  .amber { color: #d4a026; }
+
+  .section { margin-bottom: 40px; }
+  .section-label {
+    color: #888;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 12px;
+  }
+
+  /* ASCII art */
+  .ascii {
+    color: #d4a026;
+    font-size: 12px;
+    line-height: 1.3;
+    margin-bottom: 32px;
+    opacity: 0.6;
+  }
+
+  /* Inputs */
+  textarea, input[type="text"] {
+    width: 100%;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    color: #d4d4d4;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 12px 16px;
+    border-radius: 6px;
+    outline: none;
+    resize: vertical;
+  }
+  textarea:focus, input[type="text"]:focus { border-color: #d4a026; }
+  textarea { min-height: 80px; }
+  textarea::placeholder, input::placeholder { color: #444; }
+
+  /* Tags */
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .tag {
+    padding: 6px 14px;
+    border: 1px solid #2a2a2a;
+    border-radius: 20px;
+    font-size: 13px;
+    color: #999;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .tag:hover { border-color: #555; color: #ccc; }
+  .tag.selected {
+    border-color: #d4a026;
+    color: #d4a026;
+    background: rgba(212, 160, 38, 0.08);
+  }
+
+  /* Category cards — now showing what's BLOCKED */
+  .category {
+    border: 1px solid #1e1e1e;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .category-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+  }
+  .category-header:hover { background: #111; }
+  .category-name { color: #ccc; font-size: 13px; }
+  .category-count { color: #555; font-size: 12px; }
+  .category-toggle {
+    width: 36px; height: 20px;
+    border-radius: 10px;
+    background: #c44;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .category-toggle.off { background: #2a2a2a; }
+  .category-toggle::after {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    top: 2px; left: 18px;
+    transition: all 0.2s;
+  }
+  .category-toggle.off::after { left: 2px; background: #666; }
+  .category-domains {
+    padding: 0 16px 12px;
+    color: #555;
+    font-size: 12px;
+    display: none;
+  }
+  .category.expanded .category-domains { display: block; }
+
+  /* Cooldown cards */
+  .cooldown-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border: 1px solid #1e1e1e;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .cooldown-card:hover { border-color: #333; }
+  .cooldown-card.active {
+    border-color: #d4a026;
+    background: rgba(212, 160, 38, 0.04);
+  }
+  .cooldown-card .name { color: #ccc; font-size: 13px; }
+  .cooldown-card .domain { color: #555; font-size: 12px; }
+  .cooldown-icon { font-size: 14px; color: #333; }
+  .cooldown-card.active .cooldown-icon { color: #d4a026; }
+
+  .cooldown-duration {
+    display: none;
+    padding: 10px 16px;
+    margin-top: -4px;
+    margin-bottom: 8px;
+    border: 1px solid rgba(212, 160, 38, 0.2);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    background: rgba(212, 160, 38, 0.02);
+  }
+  .cooldown-duration.visible { display: flex; gap: 8px; flex-wrap: wrap; }
+  .dur-option {
+    padding: 5px 14px;
+    border: 1px solid #2a2a2a;
+    border-radius: 14px;
+    font-size: 12px;
+    color: #888;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .dur-option:hover { border-color: #555; color: #ccc; }
+  .dur-option.selected {
+    border-color: #d4a026;
+    color: #d4a026;
+    background: rgba(212, 160, 38, 0.08);
+  }
+
+  /* Summary */
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid #1a1a1a;
+    font-size: 13px;
+  }
+  .summary-label { color: #777; }
+  .summary-value { color: #e8e8e8; }
+  .summary-value.amber { color: #d4a026; }
+  .summary-value.red { color: #c44; }
+
+  /* Vigilant box */
+  .vigilant-box {
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .vigilant-box h3 {
+    font-size: 14px;
+    color: #d4a026;
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .vigilant-box p {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .vigilant-box p:last-child { margin-bottom: 0; }
+
+  /* Terminal command block */
+  .terminal-block {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 24px;
+    position: relative;
+  }
+  .terminal-label {
+    color: #555;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .terminal-cmd {
+    color: #d4a026;
+    font-size: 13px;
+    word-break: break-all;
+    line-height: 1.5;
+    user-select: all;
+  }
+  .terminal-cmd .dim { color: #555; }
+  .btn-copy {
+    position: absolute;
+    top: 12px; right: 12px;
+    padding: 4px 12px;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    color: #888;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .btn-copy:hover { border-color: #555; color: #ccc; }
+
+  /* Buttons */
+  .btn-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid #1a1a1a;
+  }
+  .btn {
+    padding: 10px 28px;
+    border: none;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-next {
+    background: #d4a026;
+    color: #0a0a0a;
+    font-weight: 600;
+  }
+  .btn-next:hover { background: #e0ad2e; }
+  .btn-back {
+    background: none;
+    color: #555;
+    border: 1px solid #2a2a2a;
+  }
+  .btn-back:hover { color: #999; border-color: #555; }
+
+  .note {
+    color: #555;
+    font-size: 12px;
+    margin-top: 8px;
+  }
+
+  /* Welcome */
+  .welcome-hero { margin-top: 32px; margin-bottom: 64px; }
+  .welcome-hero h1 { font-size: 28px; line-height: 1.3; margin-bottom: 16px; }
+  .welcome-detail { color: #555; font-size: 13px; margin-bottom: 8px; }
+
+  /* Domain input */
+  .domain-input-row { display: flex; gap: 8px; margin-top: 16px; }
+  .domain-input-row input { flex: 1; }
+  .btn-add {
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    color: #888;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn-add:hover { border-color: #555; color: #ccc; }
+  .added-domains { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .added-domain {
+    padding: 4px 10px;
+    background: rgba(212, 160, 38, 0.08);
+    border: 1px solid rgba(212, 160, 38, 0.2);
+    border-radius: 4px;
+    font-size: 12px;
+    color: #d4a026;
+  }
+
+  /* Cooldown explainer */
+  .cooldown-explainer {
+    background: #111;
+    border: 1px dashed #2a2a2a;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 32px;
+    font-size: 13px;
+    color: #888;
+    line-height: 1.7;
+  }
+  .cooldown-explainer strong { color: #ccc; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<div class="progress">
+  <div class="progress-fill" id="progress" style="width: 20%"></div>
+</div>
+<div class="step-indicator" id="step-indicator">1 / 5</div>
+
+<!-- ============================================ -->
+<!-- SCREEN 1: WELCOME                            -->
+<!-- ============================================ -->
+<div class="screen active" id="screen-1">
+  <pre class="ascii">
+    ▓▓▓▓▓▓
+  ▓▓      ▓▓
+ ▓▓  ░░░░  ▓▓
+ ▓▓  ░░░░  ▓▓
+  ▓▓      ▓▓
+    ▓▓▓▓▓▓
+  </pre>
+
+  <div class="welcome-hero">
+    <h1>The distracting internet<br>is <span class="amber">off</span>.</h1>
+    <p class="subtitle">Let's decide what stays on.</p>
+
+    <div class="welcome-detail">
+      Amber blocks everything distracting by default —
+    </div>
+    <div class="welcome-detail">
+      social media, news, video, forums, all of it.
+    </div>
+    <div class="welcome-detail" style="margin-top: 16px;">
+      You tell me what's essential, and I'll
+    </div>
+    <div class="welcome-detail">
+      guard the rest. When you need something
+    </div>
+    <div class="welcome-detail">
+      back, you ask — and I'll make sure you mean it.
+    </div>
+  </div>
+
+  <div>
+    <button class="btn btn-next" onclick="goTo(2)">Let's go →</button>
+    <p class="note" style="margin-top: 16px;">Takes about 2 minutes.</p>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SCREEN 2: YOUR WHY                           -->
+<!-- ============================================ -->
+<div class="screen" id="screen-2">
+  <h1>Tell me about it</h1>
+  <p class="subtitle">I'll use this to hold you accountable later. Be honest with me.</p>
+
+  <div class="section">
+    <div class="section-label">What pulls you in?</div>
+    <div class="tags">
+      <span class="tag selected">Twitter / X</span>
+      <span class="tag selected">YouTube</span>
+      <span class="tag">Reddit</span>
+      <span class="tag">Instagram</span>
+      <span class="tag">TikTok</span>
+      <span class="tag">News sites</span>
+      <span class="tag">Hacker News</span>
+      <span class="tag">Shopping</span>
+    </div>
+    <input type="text" placeholder="Something else...">
+  </div>
+
+  <div class="section">
+    <div class="section-label">What do you lose when it does?</div>
+    <textarea placeholder="e.g. I lose my evenings. I sit down to check one thing and 2 hours vanish. My deep work never gets the unbroken time it needs."></textarea>
+  </div>
+
+  <div class="section">
+    <div class="section-label">What would you rather be doing?</div>
+    <textarea placeholder="e.g. Writing, reading, building things, being present. The stuff I actually care about but never protect."></textarea>
+  </div>
+
+  <p class="note">Stored locally. I'll use these words to challenge you when you ask for access — not to judge, but to remind you what you told me matters.</p>
+
+  <div class="btn-row">
+    <button class="btn btn-back" onclick="goTo(1)">← Back</button>
+    <button class="btn btn-next" onclick="goTo(3)">Continue →</button>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SCREEN 3: WHAT I BLOCK                       -->
+<!-- ============================================ -->
+<div class="screen" id="screen-3">
+  <h1>Here's what I block</h1>
+  <p class="subtitle">All on by default. Turn off anything you genuinely need for work.</p>
+
+  <div class="section">
+    <div class="section-label">Blocked categories</div>
+
+    <div class="category expanded">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Social media</span>
+          <span class="category-count">— 44 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        twitter, x, facebook, instagram, tiktok, reddit,
+        linkedin, discord, threads, bluesky, mastodon,
+        pinterest, tumblr, snapchat, hacker news, quora,
+        vk, weibo, lemmy, 4chan + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Video & streaming</span>
+          <span class="category-count">— 25 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        youtube, netflix, twitch, kick, disney+, hulu,
+        hbo max, prime video, crunchyroll, dailymotion,
+        bilibili, vimeo, rumble + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">News & media</span>
+          <span class="category-count">— 68 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        substack, medium, cnn, bbc, nytimes, guardian,
+        spiegel, bild, zeit, faz, orf, nzz, buzzfeed,
+        the verge, ars technica, techcrunch, tmz + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Shopping</span>
+          <span class="category-count">— 28 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        amazon, ebay, temu, shein, aliexpress, zalando,
+        etsy, otto, mydealz, kleinanzeigen + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Sports, gaming, memes</span>
+          <span class="category-count">— 39 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        espn, livescore, kicker, steam, ign, chess.com,
+        9gag, imgur, tvtropes, fandom + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Reading, dating, gambling</span>
+          <span class="category-count">— 41 domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        wattpad, fanfiction, manga, webtoons, tinder,
+        bumble, bet365, tipico, pokerstars + more
+      </div>
+    </div>
+
+    <div class="category">
+      <div class="category-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div>
+          <span class="category-name">Adult</span>
+          <span class="category-count">— 75,000+ domains</span>
+        </div>
+        <div class="category-toggle"></div>
+      </div>
+      <div class="category-domains">
+        Comprehensive adult content blocklist. Always on.
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Need something specific unblocked?</div>
+    <div class="domain-input-row">
+      <input type="text" placeholder="e.g. linkedin.com (for job search)">
+      <button class="btn-add">+ Allow</button>
+    </div>
+    <div class="added-domains">
+      <span class="added-domain">linkedin.com</span>
+    </div>
+    <p class="note" style="margin-top: 12px;">Email, banking, maps, dev tools — all untouched. I only block distractions.</p>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-back" onclick="goTo(2)">← Back</button>
+    <button class="btn btn-next" onclick="goTo(4)">Continue →</button>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SCREEN 4: COOLDOWNS                          -->
+<!-- ============================================ -->
+<div class="screen" id="screen-4">
+  <h1>Cooldowns</h1>
+  <p class="subtitle">For the sites that really get you.</p>
+
+  <div class="cooldown-explainer">
+    Any blocked site can get temporary access through a grant.
+    But some sites are <strong>too easy to impulse-open</strong>.
+    <br><br>
+    A cooldown means: you can still unlock it, but you have
+    to <strong>wait first</strong>. Request access, then come back
+    after the cooldown. If you still want it — it's yours.
+  </div>
+
+  <div class="section">
+    <div class="cooldown-card active" onclick="toggleCooldown(this)">
+      <div>
+        <div class="name">Twitter / X</div>
+        <div class="domain">twitter.com, x.com</div>
+      </div>
+      <span class="cooldown-icon">◉</span>
+    </div>
+    <div class="cooldown-duration visible">
+      <span class="dur-option">1h</span>
+      <span class="dur-option">3h</span>
+      <span class="dur-option selected">6h</span>
+      <span class="dur-option">24h</span>
+      <span class="dur-option">72h</span>
+    </div>
+
+    <div class="cooldown-card active" onclick="toggleCooldown(this)">
+      <div>
+        <div class="name">YouTube</div>
+        <div class="domain">youtube.com, youtu.be</div>
+      </div>
+      <span class="cooldown-icon">◉</span>
+    </div>
+    <div class="cooldown-duration visible">
+      <span class="dur-option">1h</span>
+      <span class="dur-option">3h</span>
+      <span class="dur-option selected">6h</span>
+      <span class="dur-option">24h</span>
+      <span class="dur-option">72h</span>
+    </div>
+
+    <div class="cooldown-card" onclick="toggleCooldown(this)">
+      <div>
+        <div class="name">Reddit</div>
+        <div class="domain">reddit.com</div>
+      </div>
+      <span class="cooldown-icon">○</span>
+    </div>
+    <div class="cooldown-duration">
+      <span class="dur-option">1h</span>
+      <span class="dur-option selected">3h</span>
+      <span class="dur-option">6h</span>
+      <span class="dur-option">24h</span>
+      <span class="dur-option">72h</span>
+    </div>
+
+    <div class="cooldown-card" onclick="toggleCooldown(this)">
+      <div>
+        <div class="name">TikTok</div>
+        <div class="domain">tiktok.com</div>
+      </div>
+      <span class="cooldown-icon">○</span>
+    </div>
+    <div class="cooldown-duration">
+      <span class="dur-option">1h</span>
+      <span class="dur-option selected">3h</span>
+      <span class="dur-option">6h</span>
+      <span class="dur-option">24h</span>
+      <span class="dur-option">72h</span>
+    </div>
+
+    <div class="cooldown-card" onclick="toggleCooldown(this)">
+      <div>
+        <div class="name">Instagram</div>
+        <div class="domain">instagram.com</div>
+      </div>
+      <span class="cooldown-icon">○</span>
+    </div>
+    <div class="cooldown-duration">
+      <span class="dur-option">1h</span>
+      <span class="dur-option selected">3h</span>
+      <span class="dur-option">6h</span>
+      <span class="dur-option">24h</span>
+      <span class="dur-option">72h</span>
+    </div>
+  </div>
+
+  <p class="note">Not a permanent ban — just friction. The impulse passes. The real need doesn't.</p>
+
+  <div class="btn-row">
+    <button class="btn btn-back" onclick="goTo(3)">← Back</button>
+    <button class="btn btn-next" onclick="goTo(5)">Continue →</button>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SCREEN 5: ACTIVATE                           -->
+<!-- ============================================ -->
+<div class="screen" id="screen-5">
+  <h1>Here's what I'll do</h1>
+  <p class="subtitle">Your shield at a glance.</p>
+
+  <div class="section">
+    <div class="summary-row">
+      <span class="summary-label">Blocked</span>
+      <span class="summary-value red">11 categories (75,800+ domains)</span>
+    </div>
+    <div class="summary-row">
+      <span class="summary-label">Cooldowns</span>
+      <span class="summary-value amber">Twitter (6h), YouTube (6h)</span>
+    </div>
+    <div class="summary-row">
+      <span class="summary-label">Allowed exceptions</span>
+      <span class="summary-value">1 (linkedin.com)</span>
+    </div>
+  </div>
+
+  <div class="vigilant-box">
+    <h3>◉ Vigilant mode — always on</h3>
+    <p>When you get temporary access to something blocked, I watch your screen. Drift off-task and I pull the plug.</p>
+    <p style="color: #555;">Runs on your machine. Screenshots stay local.</p>
+  </div>
+
+  <div style="text-align: center; margin-top: 40px;">
+    <button class="btn btn-next" onclick="activate()" style="padding: 14px 48px; font-size: 16px;">Activate shield</button>
+  </div>
+
+  <p class="note" style="text-align: center; margin-top: 16px;">Blocks take effect immediately. DNS flushed, firewall rules applied.</p>
+
+  <div class="terminal-block" style="margin-top: 32px;">
+    <div class="terminal-label">When you need something unblocked</div>
+    <div class="terminal-cmd" style="color: #888;">
+      $ claude<br>
+      > <span class="amber">/cc-amber-focus</span><br>
+      > I need reddit for 15 min to check r/rust
+    </div>
+  </div>
+
+  <p class="note" style="margin-top: 12px;">I'll challenge your intent, start a timer, and watch your screen. When time's up, I reblock. No CC session needed for blocking — the shield runs 24/7.</p>
+
+  <div style="text-align: center; margin-top: 32px;">
+    <button class="btn btn-back" onclick="goTo(4)">← Back</button>
+  </div>
+</div>
+
+<script>
+  let current = 1;
+  const total = 5;
+
+  function goTo(n) {
+    document.getElementById('screen-' + current).classList.remove('active');
+    document.getElementById('screen-' + n).classList.add('active');
+    current = n;
+    document.getElementById('progress').style.width = (n / total * 100) + '%';
+    document.getElementById('step-indicator').textContent = n + ' / ' + total;
+    window.scrollTo(0, 0);
+  }
+
+  document.querySelectorAll('.tag').forEach(tag => {
+    tag.addEventListener('click', () => tag.classList.toggle('selected'));
+  });
+
+  document.querySelectorAll('.category-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggle.classList.toggle('off');
+    });
+  });
+
+  function toggleCooldown(card) {
+    card.classList.toggle('active');
+    const icon = card.querySelector('.cooldown-icon');
+    icon.textContent = card.classList.contains('active') ? '◉' : '○';
+    card.nextElementSibling.classList.toggle('visible');
+  }
+
+  document.querySelectorAll('.dur-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      opt.parentElement.querySelectorAll('.dur-option').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+    });
+  });
+
+  function activate() {
+    const btn = event.target;
+    btn.textContent = 'Activating...';
+    btn.disabled = true;
+    // In production: POST /api/setup/activate
+    setTimeout(() => {
+      btn.textContent = '◉ Shield active';
+      btn.style.background = '#2a6';
+    }, 1500);
+  }
+
+  // Auto-navigate via ?screen=N query param (for Figma capture)
+  const params = new URLSearchParams(window.location.search);
+  const screenParam = parseInt(params.get('screen'));
+  if (screenParam >= 1 && screenParam <= total) {
+    goTo(screenParam);
+  }
+</script>
+
+</body>
+</html>
