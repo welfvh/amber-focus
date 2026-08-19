@@ -35,6 +35,8 @@ export async function enforceEndedAllowance(domain: string): Promise<void> {
     }
   }
   for (const target of targets) {
+    // Re-check per iteration: a grant issued mid-loop must win over stale targets.
+    if (!isDomainBlocked(target)) continue;
     await enforceDomain(target);
   }
 }
