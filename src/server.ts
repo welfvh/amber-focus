@@ -246,8 +246,12 @@ app.delete('/api/grant/:domain', async (req: Request, res: Response) => {
     await enableBlocking(getEffectivelyBlockedDomains());
   }
 
-  // Aggressively enforce: kill connections, close tabs
-  await enforceDomain(domain);
+  // Aggressively enforce: kill connections, close tabs.
+  // Guard: revoking a grant for a domain that is not on the blocklist must not
+  // create pf rules for it (same failure mode as the expiry checker).
+  if (isDomainBlocked(domain)) {
+    await enforceDomain(domain);
+  }
 
   res.json({ success: true, domain, revoked: true });
 });
@@ -548,7 +552,12 @@ async function checkAllowanceExpiry(): Promise<void> {
     }
     await enableBlocking(getEffectivelyBlockedDomains());
     for (const domain of expiredDomains) {
-      await enforceDomain(domain);
+      // Only enforce domains still on the blocklist. Enforcing a never-blocked
+      // domain writes pf rules that no layer reports and nothing cleans up
+      // (github.com incident, 2026-08-17).
+      if (isDomainBlocked(domain)) {
+        await enforceDomain(domain);
+      }
     }
   }
 
