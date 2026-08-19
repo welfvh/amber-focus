@@ -12,7 +12,7 @@
 
 import express, { Request, Response } from 'express';
 import http from 'http';
-import { handleVigilantViolation } from './actions.js';
+import { handleVigilantViolation, enforceEndedAllowance } from './actions.js';
 import {
   isDomainBlocked,
   grantAllowance,
@@ -247,11 +247,10 @@ app.delete('/api/grant/:domain', async (req: Request, res: Response) => {
   }
 
   // Aggressively enforce: kill connections, close tabs.
-  // Guard: revoking a grant for a domain that is not on the blocklist must not
-  // create pf rules for it (same failure mode as the expiry checker).
-  if (isDomainBlocked(domain)) {
-    await enforceDomain(domain);
-  }
+  // Covers only blocked domains — never-blocked domains get no pf rules
+  // (github.com incident, 2026-08-17); blocked children of a parent
+  // allowance are enforced too.
+  await enforceEndedAllowance(domain);
 
   res.json({ success: true, domain, revoked: true });
 });
@@ -552,12 +551,7 @@ async function checkAllowanceExpiry(): Promise<void> {
     }
     await enableBlocking(getEffectivelyBlockedDomains());
     for (const domain of expiredDomains) {
-      // Only enforce domains still on the blocklist. Enforcing a never-blocked
-      // domain writes pf rules that no layer reports and nothing cleans up
-      // (github.com incident, 2026-08-17).
-      if (isDomainBlocked(domain)) {
-        await enforceDomain(domain);
-      }
+      await enforceEndedAllowance(domain);
     }
   }
 
