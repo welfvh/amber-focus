@@ -14420,26 +14420,41 @@ function diffDomains(prev, next) {
     removed: [...p].filter((d) => !n.has(d)).sort()
   };
 }
-function hostsBlocks(content, domain2) {
-  const base = normalizeDomain(domain2);
-  const hosts = /* @__PURE__ */ new Set([base, "www." + base]);
+var BLOCK_LINE = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+function buildHostsIndex(content) {
   const managed = findSpan(content, MARKER_START, MARKER_END);
   const legacy = findSpan(content, LEGACY_MARKER_START, LEGACY_MARKER_END);
-  const re = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+  const map2 = /* @__PURE__ */ new Map();
   let offset = 0;
-  let found = null;
-  for (const line of content.split("\n")) {
-    const m = line.match(re);
-    if (m && hosts.has(m[1].toLowerCase())) {
-      const inManaged = managed && offset >= managed.start && offset < managed.end;
-      const inLegacy = legacy && offset >= legacy.start && offset < legacy.end;
+  let lineEnd;
+  while (offset <= content.length) {
+    lineEnd = content.indexOf("\n", offset);
+    if (lineEnd === -1) lineEnd = content.length;
+    const line = content.slice(offset, lineEnd);
+    const m = BLOCK_LINE.exec(line);
+    if (m) {
+      const host = m[1].toLowerCase();
+      const inManaged = managed !== null && offset >= managed.start && offset < managed.end;
+      const inLegacy = legacy !== null && offset >= legacy.start && offset < legacy.end;
       const source = inManaged ? "managed" : inLegacy ? "legacy" : "other";
-      if (source !== "managed") return source;
-      found = source;
+      const existing = map2.get(host);
+      if (existing === void 0 || existing === "managed" && source !== "managed") {
+        map2.set(host, source);
+      }
     }
-    offset += line.length + 1;
+    offset = lineEnd + 1;
   }
-  return found;
+  return {
+    size: map2.size,
+    lookup(domain2) {
+      const base = normalizeDomain(domain2);
+      const a = map2.get(base) ?? null;
+      const b = map2.get("www." + base) ?? null;
+      if (a === null) return b;
+      if (b === null) return a;
+      return a === "managed" ? b : a;
+    }
+  };
 }
 
 // src/daemon/reconciler.ts
@@ -14456,6 +14471,8 @@ var Reconciler = class {
   sleep;
   chain = Promise.resolve();
   lastApplied = null;
+  /** Index of the last hosts content seen; rebuilt only when the file changes. */
+  hostsIndex = null;
   status = {
     configPath: null,
     shieldActive: false,
@@ -14532,9 +14549,15 @@ var Reconciler = class {
       }
       const after = hostsChanged ? await this.sys.readFile(this.hostsPath) : before;
       const converged = sectionEquivalent(extractManagedSection(after), wantedSection);
-      const legacyBlockedAllowed = activeAllowanceDomains(cfg, now).filter(
-        (d) => hostsBlocks(after, d) === "legacy"
-      );
+      const allowed = activeAllowanceDomains(cfg, now);
+      let legacyBlockedAllowed = [];
+      if (allowed.length > 0) {
+        if (!this.hostsIndex || this.hostsIndex.content !== after) {
+          this.hostsIndex = { content: after, index: buildHostsIndex(after) };
+        }
+        const index = this.hostsIndex.index;
+        legacyBlockedAllowed = allowed.filter((d) => index.lookup(d) === "legacy");
+      }
       if (!converged) throw new Error("hosts verification failed after write");
       this.lastApplied = desired;
       this.status = {

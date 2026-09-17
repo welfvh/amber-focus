@@ -18,7 +18,7 @@ import {
   type Allowance,
 } from './store.js';
 import { reconcile, getDaemonStatus } from './daemon-client.js';
-import { hostsBlocks, type HostsBlockSource } from './shared/reconcile.js';
+import { buildHostsIndex, type HostsBlockSource, type HostsIndex } from './shared/reconcile.js';
 import type { DaemonStatus } from './shared/ipc-types.js';
 import { startSession as startVigilantSession, stopSessionsForDomain } from './vigilant.js';
 
@@ -58,9 +58,20 @@ export interface OsBlockState {
   source: HostsBlockSource | null;
 }
 
+let hostsCache: { mtimeMs: number; size: number; index: HostsIndex } | null = null;
+
+/** Index of /etc/hosts, rebuilt only when the file's mtime or size changed (it can be ~5 MB). */
+function hostsIndex(): HostsIndex {
+  const stat = fs.statSync(HOSTS_PATH);
+  if (!hostsCache || hostsCache.mtimeMs !== stat.mtimeMs || hostsCache.size !== stat.size) {
+    hostsCache = { mtimeMs: stat.mtimeMs, size: stat.size, index: buildHostsIndex(fs.readFileSync(HOSTS_PATH, 'utf8')) };
+  }
+  return hostsCache.index;
+}
+
 /** What the OS enforces for this domain right now, read from /etc/hosts. */
 export function osBlockState(domain: string): OsBlockState {
-  const source = hostsBlocks(fs.readFileSync(HOSTS_PATH, 'utf8'), domain);
+  const source = hostsIndex().lookup(domain);
   return { blocked: source !== null, source };
 }
 

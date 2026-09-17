@@ -174,30 +174,57 @@ export function diffDomains(prev: string[], next: string[]): DomainDiff {
 export type HostsBlockSource = 'managed' | 'legacy' | 'other';
 
 /**
- * Which part of /etc/hosts blocks `domain` (or its www. variant), if any.
- * "other" means an entry outside both known sections.
+ * One pass over a hosts file: every blocked hostname mapped to the section that
+ * blocks it. Build once per file version (the file can be ~5 MB), then look up
+ * in O(1). Legacy and foreign entries win over the managed section: the
+ * resolver takes the first match, and both precede ours.
  */
-export function hostsBlocks(content: string, domain: string): HostsBlockSource | null {
-  const base = normalizeDomain(domain);
-  const hosts = new Set([base, 'www.' + base]);
+export interface HostsIndex {
+  readonly size: number;
+  lookup(domain: string): HostsBlockSource | null;
+}
+
+const BLOCK_LINE = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+
+export function buildHostsIndex(content: string): HostsIndex {
   const managed = findSpan(content, MARKER_START, MARKER_END);
   const legacy = findSpan(content, LEGACY_MARKER_START, LEGACY_MARKER_END);
-  const re = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+  const map = new Map<string, HostsBlockSource>();
 
   let offset = 0;
-  let found: HostsBlockSource | null = null;
-  for (const line of content.split('\n')) {
-    const m = line.match(re);
-    if (m && hosts.has(m[1].toLowerCase())) {
-      const inManaged = managed && offset >= managed.start && offset < managed.end;
-      const inLegacy = legacy && offset >= legacy.start && offset < legacy.end;
+  let lineEnd: number;
+  while (offset <= content.length) {
+    lineEnd = content.indexOf('\n', offset);
+    if (lineEnd === -1) lineEnd = content.length;
+    const line = content.slice(offset, lineEnd);
+    const m = BLOCK_LINE.exec(line);
+    if (m) {
+      const host = m[1].toLowerCase();
+      const inManaged = managed !== null && offset >= managed.start && offset < managed.end;
+      const inLegacy = legacy !== null && offset >= legacy.start && offset < legacy.end;
       const source: HostsBlockSource = inManaged ? 'managed' : inLegacy ? 'legacy' : 'other';
-      // Legacy or foreign entries override the managed section (first match wins
-      // in the resolver, and both other sections precede ours).
-      if (source !== 'managed') return source;
-      found = source;
+      const existing = map.get(host);
+      if (existing === undefined || (existing === 'managed' && source !== 'managed')) {
+        map.set(host, source);
+      }
     }
-    offset += line.length + 1;
+    offset = lineEnd + 1;
   }
-  return found;
+
+  return {
+    size: map.size,
+    lookup(domain: string): HostsBlockSource | null {
+      const base = normalizeDomain(domain);
+      const a = map.get(base) ?? null;
+      const b = map.get('www.' + base) ?? null;
+      if (a === null) return b;
+      if (b === null) return a;
+      return a === 'managed' ? b : a;
+    },
+  };
+}
+
+/** Which part of /etc/hosts blocks `domain` (or its www. variant), if any. */
+export function hostsBlocks(content: string, domain: string): HostsBlockSource | null {
+  return buildHostsIndex(content).lookup(domain);
 }

@@ -28,8 +28,9 @@ import {
   sectionEquivalent,
   replaceManagedSection,
   diffDomains,
-  hostsBlocks,
+  buildHostsIndex,
   type DesiredState,
+  type HostsIndex,
 } from '../shared/reconcile.js';
 import type { ReconcileStatus } from '../shared/ipc-types.js';
 
@@ -61,6 +62,8 @@ export class Reconciler {
 
   private chain: Promise<unknown> = Promise.resolve();
   private lastApplied: DesiredState | null = null;
+  /** Index of the last hosts content seen; rebuilt only when the file changes. */
+  private hostsIndex: { content: string; index: HostsIndex } | null = null;
   private status: ReconcileStatus = {
     configPath: null,
     shieldActive: false,
@@ -149,9 +152,15 @@ export class Reconciler {
 
       const after = hostsChanged ? await this.sys.readFile(this.hostsPath) : before;
       const converged = sectionEquivalent(extractManagedSection(after), wantedSection);
-      const legacyBlockedAllowed = activeAllowanceDomains(cfg, now).filter(
-        d => hostsBlocks(after, d) === 'legacy',
-      );
+      const allowed = activeAllowanceDomains(cfg, now);
+      let legacyBlockedAllowed: string[] = [];
+      if (allowed.length > 0) {
+        if (!this.hostsIndex || this.hostsIndex.content !== after) {
+          this.hostsIndex = { content: after, index: buildHostsIndex(after) };
+        }
+        const index = this.hostsIndex.index;
+        legacyBlockedAllowed = allowed.filter(d => index.lookup(d) === 'legacy');
+      }
       if (!converged) throw new Error('hosts verification failed after write');
 
       this.lastApplied = desired;

@@ -10,6 +10,7 @@ import {
   replaceManagedSection,
   diffDomains,
   hostsBlocks,
+  buildHostsIndex,
   MARKER_START,
   MARKER_END,
   LEGACY_MARKER_START,
@@ -117,5 +118,27 @@ describe('hostsBlocks', () => {
 
   it('reports foreign entries as other', () => {
     expect(hostsBlocks('0.0.0.0 foo.com\n' + content, 'foo.com')).toBe('other');
+  });
+
+  it('indexes once and answers lookups without rescanning', () => {
+    const index = buildHostsIndex(content);
+    expect(index.size).toBeGreaterThan(0);
+    expect(index.lookup('reddit.com')).toBe('managed');
+    expect(index.lookup('youtube.com')).toBe('legacy');
+    expect(index.lookup('nope.com')).toBeNull();
+  });
+
+  it('lets a legacy entry override a managed one for the same host', () => {
+    const both = `${LEGACY_MARKER_START}\n0.0.0.0 reddit.com\n${LEGACY_MARKER_END}\n${managed}`;
+    expect(buildHostsIndex(both).lookup('reddit.com')).toBe('legacy');
+  });
+
+  it('handles a large file quickly', () => {
+    const big = Array.from({ length: 250_000 }, (_, i) => `0.0.0.0 h${i}.example`).join('\n') + '\n' + managed;
+    const t0 = performance.now();
+    const index = buildHostsIndex(big);
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(index.lookup('h123.example')).toBe('other');
+    expect(index.lookup('reddit.com')).toBe('managed');
   });
 });
