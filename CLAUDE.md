@@ -1,10 +1,12 @@
 # amber-focus
 
-Multi-layer macOS distraction blocker. The **server** (user-space, port 8053) owns all
-application state. The **daemon** (root, Unix socket) applies that state to the OS.
-Stateless daemon design -- if the daemon restarts, the server re-sends the desired state
-and nothing is lost. An optional **MITM proxy** (port 8080) adds path-level blocking
-and progressive delay friction.
+Multi-layer macOS distraction blocker. The **server** (user-space, port 8053) edits the
+desired state in `config.json`. The **daemon** (root, Unix socket) owns convergence: it
+reads `config.json` itself and reconciles `/etc/hosts` and pf to it every 10 s, on every
+file change, and on request. Grants and expiries therefore apply even when the server is
+down or crashed. The server asks for a pass after each change and reports OS truth (read
+from `/etc/hosts`), never its own store alone. An optional **MITM proxy** (port 8080) adds
+path-level blocking and progressive delay friction.
 
 The blocker operates on **three layers** that together close all known DNS-bypass gaps
 (browser DoH, internal DNS caches, IP-cache resurfacing):
@@ -16,39 +18,59 @@ The blocker operates on **three layers** that together close all known DNS-bypas
 ## Architecture
 
 ```
-Claude ──MCP──> Server (:8053) ──JSON-RPC──> Daemon (root)
-                  │                              │
-                store.ts                    /etc/hosts
-               (config.json)                pf firewall
-                  │                         DNS cache flush
-                REST API                    browser tab close
-                  │                         connection kill (pfctl -k)
-              [Proxy :8080]                 tab sweep (every 10s)
-             (optional MITM)
-                  │
+Claude ──MCP──> Server (:8053) ──"reconcile now"──> Daemon (root)
+                  │                                    │ Reconciler loop
+                store.ts ──writes──> config.json ──reads─┤ (10s timer, file watch, RPC)
+                  │                                    │
+                REST API ──reads /etc/hosts──          ├─ /etc/hosts managed section
+              (OS truth in /api/check, /status)        ├─ pf firewall (static + dynamic)
+                  │                                    ├─ DNS cache flush
+              [Proxy :8080]                            ├─ newly blocked: pf enforce, kill, close tabs
+             (optional MITM)                           ├─ newly allowed: browser DNS flush, reload tabs
+                  │                                    └─ tab sweep (every pass)
                   └─reads─> retreat-enforcer (user LaunchAgent)
                             NSWorkspace observer + 5s app sweep
                             → forceTerminate non-allowlisted apps
 ```
 
+**Desired state → reconcile.** Every mutation (grant, revoke, block, unblock, shield
+on/off, expiry) only edits `config.json`, then asks the daemon for a pass. The pass is
+idempotent: it renders the managed hosts section, writes it only when it differs, refreshes
+pf on change, and derives side effects from the diff between the base domains recorded in
+the previous section (`# Domains:` line) and the new ones. A daemon restart loses nothing:
+the previous state is read back from `/etc/hosts` itself. If `config.json` is unreadable,
+the pass stops and the OS keeps its blocks (fail closed); `lastError` says why.
+
+**Truth, not intent.** `GET /api/check/:domain` returns `blocked` (what `/etc/hosts`
+enforces right now, with `source`: `managed` / `legacy` / `other`) next to
+`desiredBlocked` (the store). `/status` exposes `daemonRunning`, `converged`, `healthy`,
+`lastError`, and `legacyBlockedAllowed` (allowed domains the orphaned legacy section still
+blocks). `focus-grant` verifies against `blocked`, never `desiredBlocked`.
+
+**Daemon down.** The server cannot start the root daemon. It keeps accepting edits, reports
+`daemonRunning: false` / `applied: false` on every response, and posts a macOS
+notification with the fix command after two failed watchdog checks (10 min cooldown).
+
 ## Key Files
 
 | Path | Responsibility |
 |------|----------------|
-| `src/server.ts` | Express HTTP on 127.0.0.1:8053. REST API, MCP mount, allowance expiry loop (30s), tab sweep loop (10s) |
+| `src/server.ts` | Express HTTP on 127.0.0.1:8053. REST API, MCP mount, allowance expiry loop (30s), daemon watchdog (30s). Never dies on daemon errors (global handlers + async route wrapper) |
+| `src/actions.ts` | `applyDesiredState` (ask the daemon to converge, never throws), `describeDomain` / `osBlockState` (truth from `/etc/hosts`), vigilant start/resume |
 | `app/retreat-enforcer.swift` | User-space Swift binary. NSWorkspace launch observer + 5s sweep. Reads `retreat` config from `config.json` directly; kills non-allowlisted apps when current time falls inside a configured window and `endDate` hasn't passed |
-| `src/store.ts` | All persistent state: blocked domains, allowances, delays, hard lockouts, categories. Reads/writes `~/.config/amber-focus/config.json` |
+| `src/store.ts` | All persistent state: `shieldActive`, blocked domains, allowances (with optional `vigilantIntent`), delays, hard lockouts, categories. Atomic writes to `~/.config/amber-focus/config.json` |
 | `src/mcp.ts` | MCP server (Streamable HTTP transport, session management). 8 tools for Claude. Bearer token auth |
-| `src/daemon-client.ts` | Typed JSON-RPC 2.0 client over Unix socket. Server uses this to command the daemon |
+| `src/daemon-client.ts` | Typed JSON-RPC 2.0 client over Unix socket: `reconcile`, `status`, `flush_dns`, `restart`. Returns null when the daemon is unreachable |
 | `src/vigilant.ts` | Vigilant mode: screenshot capture, Anthropic API evaluation, auto-revoke on drift |
 | `src/proxy.ts` | Optional MITM HTTPS proxy for path-level blocking and delay friction |
-| `src/daemon/index.ts` | Daemon entry: registers RPC handlers, listens on Unix socket, graceful shutdown |
-| `src/daemon/hosts.ts` | /etc/hosts management with marker comments, atomic writes |
+| `src/daemon/index.ts` | Daemon entry: config path discovery (`--config`, env, persisted announcement), reconcile loop (10s + file watch), RPC handlers, graceful shutdown |
+| `src/daemon/reconciler.ts` | The convergence pass: config.json → desired state → hosts section, pf, diff side effects, verification. Serialized; every caller gets a fresh pass |
+| `src/shared/reconcile.ts` | Pure core shared by daemon and server: effective blocklist, hosts section render/parse/diff, `hostsBlocks` truth lookup. Unit-tested |
 | `src/daemon/pf.ts` | pf firewall: static anchor (hardcoded IP ranges) + dynamic anchor (resolved IPs) |
-| `src/daemon/browser.ts` | Close browser tabs matching a domain via JXA/AppleScript (Safari, Arc, Chrome) |
+| `src/daemon/browser.ts` | Close or reload browser tabs by hostname match via AppleScript (Safari, Arc, Chrome); Chromium DNS cache flush |
 | `src/daemon/dns.ts` | DNS resolution via `dns.Resolver` (8.8.8.8) + system DNS cache flush |
 | `src/daemon/queue.ts` | Serial async queue to prevent concurrent pfctl calls |
-| `src/daemon/rpc.ts` | JSON-RPC 2.0 dispatcher with Zod schema validation |
+| `src/daemon/rpc.ts` | JSON-RPC 2.0 dispatcher; validates params against `DAEMON_METHODS` in ipc-types.ts |
 | `src/daemon/system.ts` | Shell exec wrappers (`SystemOperations` interface) for privileged ops |
 | `src/shared/ipc-types.ts` | JSON-RPC type definitions and Zod schemas for all daemon methods |
 | `src/shared/domains.ts` | Domain normalization, matching, www/subdomain variant expansion |
@@ -80,17 +102,18 @@ All on `http://127.0.0.1:8053`. No auth for local access.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/status` | Shield state, daemon health, blocked count, allowances |
+| GET | `/status` | Desired shield state plus daemon truth: `daemonRunning`, `converged`, `healthy`, `lastReconcileAt`, `lastError`, `legacyBlockedAllowed`, allowances, vigilant health |
 | GET | `/api/filter-state` | Full blocked domain list + version counter (for NE extension polling) |
 | GET | `/api/blocked` | List all blocked domains |
 | POST | `/api/block` | Add domain. Body: `{"domain": "..."}` |
 | DELETE | `/api/block/:domain` | Remove domain. Refuses hard-locked |
-| GET | `/api/check/:domain` | Check blocked status + allowance remaining |
-| POST | `/api/grant` | Grant timed access. Body: `{"domain","minutes","reason","vigilant?","intent?"}` |
+| GET | `/api/check/:domain` | `blocked` = OS truth from /etc/hosts (+ `source`), `desiredBlocked` = store, `onBlocklist`, `allowanceMinutes`, `locked`, `daemonRunning`, `converged` |
+| POST | `/api/grant` | Grant timed access. Body: `{"domain","minutes","reason","vigilant?","intent?"}`. Response carries `applied`, `daemonRunning`, `effective` (OS truth), `vigilant` |
 | DELETE | `/api/grant/:domain` | Revoke allowance immediately (aggressive re-block) |
 | GET | `/api/allowances` | List active allowances |
 | POST | `/api/shield/enable` | Enable shield (apply all blocking) |
 | POST | `/api/shield/disable` | Disable shield (remove all blocking) |
+| POST | `/api/reconcile` | Run one reconcile pass now. Idempotent. 503 when the daemon is unreachable |
 | GET | `/api/delayed` | List delayed domains |
 | POST | `/api/delay` | Add to delay list. Body: `{"domain": "..."}` |
 | DELETE | `/api/delay/:domain` | Remove from delay list |
@@ -112,13 +135,13 @@ All on `http://127.0.0.1:8053`. No auth for local access.
 
 ## How Blocking Works
 
-**Block:** domain added to store -> server sends `apply` RPC with full state -> daemon writes /etc/hosts entries (0.0.0.0 for domain + www + mobile variants), updates pf rules (static IP ranges + dynamic resolved IPs), flushes DNS cache. For immediate enforcement: `enforce` RPC also kills TCP connections (`pfctl -k`) and closes browser tabs (AppleScript).
+**Block:** domain added to `config.json` -> server sends `reconcile` -> the daemon's pass renders the managed hosts section (0.0.0.0 + :: for domain, www, and known variants), writes it if it differs, refreshes pf (static IP ranges + dynamic resolved IPs), flushes DNS. The diff against the previous section marks the domain as newly blocked: resolve IPs to pf, kill TCP connections (`pfctl -k`), close its tabs.
 
-**Grant (timed access):** server checks hard lockouts (refuses if locked) -> creates allowance with expiry -> computes "effectively blocked" = blocklist minus active allowances -> sends `unblock_domain` RPC (daemon removes pf rules, closes stale tabs) -> re-applies blocking with domain excluded. Expiry checker runs every 30s; on expiry: full re-block + aggressive enforce.
+**Grant (timed access):** server checks hard lockouts (refuses if locked) -> stores the allowance -> `reconcile`. The pass computes effective = blocklist minus active allowances (subdomains included), drops the domain from hosts and pf, flushes the Chromium DNS cache, and **reloads** the domain's tabs (never closes them). **Expiry** needs no server: the daemon's own 10 s pass sees `expiresAt` in the past and re-blocks with full enforcement. The server's 30 s loop only prunes expired allowances from the file, stops vigilant sessions, and requests a pass so the change is immediate.
 
 **Hard lockout:** immutable until date. `DELETE /api/block/:domain`, `POST /api/grant`, and `amber_unblock` all refuse. Currently active: Twitter/X + YouTube locked until March 1, 2026.
 
-**Tab sweep (closes the DoH gap):** every 10 seconds the server calls `sweep_blocked_tabs` with the current effective blocklist. The daemon runs one AppleScript per browser (Safari, Arc, Chrome) that walks every window/tab and closes any whose URL contains a blocked domain. This catches tabs that loaded via DNS-over-HTTPS or otherwise bypassed `/etc/hosts` — when a Chromium browser cached a real IP for instagram.com, the tab still gets closed by URL match.
+**Tab sweep (closes the DoH gap):** every pass (10 s) the daemon runs one AppleScript per browser (Safari, Arc, Chrome) that walks every window/tab and closes any whose **hostname** equals or is a subdomain of an effectively blocked domain. This catches tabs that loaded via DNS-over-HTTPS or otherwise bypassed `/etc/hosts` — when a Chromium browser cached a real IP for instagram.com, the tab still gets closed by URL match.
 
 **Retreat mode (Mac app allowlist):** an opt-in mode for periods of strict focus (retreats, deep work blocks). Configured via `POST /api/retreat` with windows (minutes from midnight), an `endDate`, and an allowlist of bundle IDs. The Swift `retreat-enforcer` LaunchAgent reads `retreat` from `config.json` directly and, while the current time falls inside any window AND `now < endDate`:
 1. **Launch observer** — `NSWorkspace.didLaunchApplicationNotification` triggers an instant kill on app launch.
@@ -130,18 +153,16 @@ The `endDate` is a hard expiry — once passed, the enforcer stops killing even 
 
 ## Daemon IPC Protocol
 
-JSON-RPC 2.0 over Unix socket at `/tmp/amberfocus.sock`. Newline-delimited. 15s timeout.
+JSON-RPC 2.0 over Unix socket at `/tmp/amberfocus.sock`. Newline-delimited. 15s timeout (45s for `reconcile`).
 
 | Method | Params | Effect |
 |--------|--------|--------|
-| `apply` | `{state: {blockedDomains, shieldActive}}` | Full state sync: /etc/hosts + pf rules + DNS flush |
-| `enforce` | `{domain}` | Aggressive block: resolve IPs, pf rules, kill connections, close tabs |
-| `unblock_domain` | `{domain}` | Remove pf rules for domain + close stale tabs |
-| `sweep_blocked_tabs` | `{domains: string[]}` | Walk every browser tab, close any whose URL matches any domain. Called every 10s by the server's tab sweep loop. Returns `{closedCount}` |
+| `reconcile` | `{configPath?, reason?}` | Announce where `config.json` lives (persisted in `/var/db/amber-focus/config-path`), run one pass, return the daemon status |
+| `status` | (none) | Daemon health without a pass: pid, uptime, `converged`, `lastReconcileAt`, `lastError`, `configPath`, `legacyBlockedAllowed` |
 | `flush_dns` | (none) | Flush macOS DNS cache |
-| `status` | (none) | Daemon health: pid, uptime, shield state, domain count |
+| `restart` | (none) | Self-exit; launchd KeepAlive respawns from the latest bundle (sudo-free redeploy) |
 
-When adding a new RPC method, register a Zod params schema in `src/shared/ipc-types.ts`, add a `case` in `validateParams` (`src/daemon/rpc.ts`), and register the handler in `src/daemon/index.ts`. **All three are required** — the dispatcher's switch otherwise rejects the method with `Unknown method` even when the handler is registered.
+When adding a new RPC method, add its Zod params schema to `DAEMON_METHODS` in `src/shared/ipc-types.ts` (the dispatcher validates against that registry) and register the handler in `src/daemon/index.ts`.
 
 ## How to Debug
 
@@ -193,7 +214,9 @@ tail -f ~/.config/amber-focus/retreat-enforcer.log                 # kill log
 - **Browser DNS cache lag on unblock**: browsers cache DNS internally, ignore system flushes. Mitigated by pf rule removal (instant) + stale tab closing + DNS flush. User should open a fresh tab. See `research/dns-cache-bug.md`.
 - **Hard lockouts**: domains can be locked until a specific date. Server refuses grant/unblock/delete at both REST and MCP layers.
 - **pf must be enabled**: run `sudo ./enable-pf.sh` once. Daemon manages rules but does not enable pf itself. Without pf, only DNS blocking (bypassable via DoH).
-- **Daemon is stateless**: all state in server's config.json. Daemon restarts freely. Server re-pushes on next operation. Server re-applies on its own restart too.
+- **Daemon owns convergence**: desired state lives in `config.json`; the daemon reads it directly and reconciles every 10 s. Daemon and server restart freely and independently. The daemon learns the config path from `--config`, `AMBER_FOCUS_CONFIG`, or the server's first `reconcile` (persisted under `/var/db/amber-focus`).
+- **Legacy hosts section**: `/etc/hosts` still carries an orphaned `# BEGIN FOCUS SHIELD BLOCK` section (~248k lines, 2026-02-21) that no code rewrites. It overrides allowances for domains it lists. The daemon reports them in `legacyBlockedAllowed`; `focus-grant` names the fix (`bin/prune-legacy-hosts-entry`). Wiping the whole section is Welf's call.
+- **launchd "disabled" flag**: a reboot with `com.amberfocus.daemon` marked disabled leaves it unloaded and `bootstrap` fails with `Input/output error (5)`. Fix: `sudo launchctl enable system/com.amberfocus.daemon` first. `redeploy.sh` and `install-legacy.sh` do this. Happened 2026-09-16.
 - **Priority domains vs bulk blocklist**: only ~28 "priority" distraction domains get IP-level pf resolution. Adult blocklist (75K+ domains) stays /etc/hosts-only (resolving all crashed the daemon).
 - **`block return` not `block drop`**: pf rules use `block return` for fast TCP RST. `block drop` causes 30-60s browser hangs.
 - **QUIC blocking**: pf also blocks `proto udp port 443` to prevent QUIC/HTTP3 fallback.

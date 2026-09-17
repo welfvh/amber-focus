@@ -1,11 +1,16 @@
 /**
  * Amber Focus Privileged Daemon — entry point.
  *
- * Runs as root. Listens on a Unix socket for JSON-RPC 2.0 requests from
- * the server process. STATELESS — all state is owned by the server.
- * The daemon just applies the desired blocking state to the system.
+ * Runs as root. Owns convergence: a Reconciler reads config.json (desired
+ * state, written by the server) and keeps /etc/hosts and pf in line with it —
+ * every 10 s, whenever config.json changes, and on request over the socket.
+ * Grants and expiries therefore apply even when the server is down.
  *
- * Key principle: Default state is BLOCKED. If anything goes wrong, we block.
+ * Key principle: default state is BLOCKED. If anything goes wrong, the OS
+ * keeps its current blocks and the status reports the error.
+ *
+ * Config path: --config <path>, AMBER_FOCUS_CONFIG, the path last announced
+ * by the server (persisted in /var/db/amber-focus), in that order.
  *
  * Start: sudo node daemon/daemon.cjs (esbuild bundle of this file)
  * Socket: /tmp/amberfocus.sock
@@ -13,109 +18,105 @@
 
 import net from 'net';
 import fs from 'fs';
+import path from 'path';
 import { MacOSSystem } from './system.js';
-import { HostsManager } from './hosts.js';
 import { PfManager } from './pf.js';
 import { BrowserManager } from './browser.js';
 import { OperationQueue } from './queue.js';
 import { RpcDispatcher } from './rpc.js';
+import { Reconciler } from './reconciler.js';
 import { flushDnsCache } from './dns.js';
-import type { ApplyResult, EnforceResult, UnblockResult, FlushDnsResult, StatusResult, DesiredState, SweepBlockedTabsResult, RestartResult } from '../shared/ipc-types.js';
+import type { DaemonStatus, FlushDnsResult, RestartResult } from '../shared/ipc-types.js';
 
 const SOCKET_PATH = '/tmp/amberfocus.sock';
+const STATE_DIR = '/var/db/amber-focus';
+const CONFIG_PATH_FILE = path.join(STATE_DIR, 'config-path');
+const TICK_INTERVAL_MS = 10_000;
+const CONFIG_POLL_MS = 1_000;
 const startTime = Date.now();
-
-// --- Subsystems ---
-
-const sys = new MacOSSystem();
-const queue = new OperationQueue();
-const hosts = new HostsManager(sys);
-const pf = new PfManager(sys, queue);
-const browser = new BrowserManager(sys);
-const rpc = new RpcDispatcher();
-
-// Last known state (for status reporting only — NOT authoritative)
-let lastState: DesiredState = { blockedDomains: [], shieldActive: true };
 
 function log(msg: string): void {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
+// --- Subsystems ---
+
+const sys = new MacOSSystem();
+const queue = new OperationQueue();
+const pf = new PfManager(sys, queue);
+const browser = new BrowserManager(sys);
+const rpc = new RpcDispatcher();
+const reconciler = new Reconciler({ sys, pf, browser, log });
+
+// --- Config path discovery ---
+
+function argConfigPath(): string | null {
+  const idx = process.argv.indexOf('--config');
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null;
+}
+
+function loadPersistedConfigPath(): string | null {
+  try {
+    const p = fs.readFileSync(CONFIG_PATH_FILE, 'utf8').trim();
+    return p || null;
+  } catch {
+    return null;
+  }
+}
+
+function persistConfigPath(p: string): void {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(CONFIG_PATH_FILE, p + '\n');
+  } catch (err) {
+    log(`could not persist config path: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+let watched: string | null = null;
+function watchConfig(p: string): void {
+  if (watched === p) return;
+  if (watched) fs.unwatchFile(watched);
+  watched = p;
+  fs.watchFile(p, { interval: CONFIG_POLL_MS }, (curr, prev) => {
+    if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) {
+      void reconciler.tick('config-change');
+    }
+  });
+}
+
+function setConfigPath(p: string, source: string): void {
+  const resolved = path.resolve(p);
+  if (reconciler.configPath === resolved) return;
+  reconciler.configPath = resolved;
+  persistConfigPath(resolved);
+  watchConfig(resolved);
+  log(`config path set from ${source}: ${resolved}`);
+}
+
+const initial = argConfigPath() ?? process.env.AMBER_FOCUS_CONFIG ?? loadPersistedConfigPath();
+if (initial) setConfigPath(initial, argConfigPath() ? '--config' : process.env.AMBER_FOCUS_CONFIG ? 'env' : 'persisted');
+else log('config path unknown until the server announces it');
+
 // --- RPC handlers ---
 
-rpc.register('apply', async (params): Promise<ApplyResult> => {
-  const { state } = params as { state: DesiredState };
-  lastState = state;
+function daemonStatus(): DaemonStatus {
+  return { running: true, pid: process.pid, uptime: Date.now() - startTime, ...reconciler.getStatus() };
+}
 
-  log(`Applying state: ${state.blockedDomains.length} domains, shield=${state.shieldActive}`);
-
-  // Update hosts file
-  const domainsBlocked = await hosts.update(state.blockedDomains, state.shieldActive);
-
-  // Update pf rules
-  await pf.updateStaticRules(state.shieldActive);
-  await pf.refreshDynamicRules(state.blockedDomains, state.shieldActive);
-
-  // Flush DNS after hosts change
-  await flushDnsCache(
-    sys.exec.bind(sys),
-    sys.execSilent.bind(sys),
-  );
-
-  log(`State applied: ${domainsBlocked} domain variants in hosts, pf updated`);
-  return { hostsUpdated: true, pfUpdated: true, domainsBlocked };
+rpc.register('reconcile', async (params): Promise<DaemonStatus> => {
+  const { configPath, reason } = params as { configPath?: string; reason?: string };
+  if (configPath) setConfigPath(configPath, 'server');
+  await reconciler.tick(reason ?? 'request');
+  return daemonStatus();
 });
 
-rpc.register('enforce', async (params): Promise<EnforceResult> => {
-  const { domain } = params as { domain: string };
-  log(`Enforcing block: ${domain}`);
-
-  const ips = await pf.blockDomain(domain.toLowerCase());
-  await pf.killConnections(domain.toLowerCase());
-  const tabsClosed = await browser.closeTabs(domain.toLowerCase());
-  await flushDnsCache(sys.exec.bind(sys), sys.execSilent.bind(sys));
-
-  log(`Block enforced: ${domain} (${ips.length} IPs, tabs closed: ${tabsClosed})`);
-  return { ipsBlocked: ips, connectionsKilled: true, tabsClosed };
-});
-
-rpc.register('unblock_domain', async (params): Promise<UnblockResult> => {
-  const { domain } = params as { domain: string };
-  log(`Unblocking domain: ${domain}`);
-
-  await pf.unblockDomain(domain.toLowerCase());
-  // Close stale tabs so user opens fresh ones with new DNS resolution
-  const tabsClosed = await browser.closeTabs(domain.toLowerCase());
-  // Flush Chromium DNS caches — they ignore system DNS flushes and cache 0.0.0.0
-  const browserDnsFlushed = await browser.flushBrowserDnsCache();
-
-  log(`Domain unblocked: ${domain} (pf rules removed, tabs closed: ${tabsClosed}, browser DNS flushed: ${browserDnsFlushed})`);
-  return { pfRulesRemoved: true, tabsClosed };
-});
-
-rpc.register('sweep_blocked_tabs', async (params): Promise<SweepBlockedTabsResult> => {
-  const { domains } = params as { domains: string[] };
-  const closedCount = await browser.sweepBlockedTabs(domains.map(d => d.toLowerCase()));
-  if (closedCount > 0) {
-    log(`Tab sweep closed ${closedCount} tab(s) matching blocklist`);
-  }
-  return { closedCount };
-});
+rpc.register('status', async (): Promise<DaemonStatus> => daemonStatus());
 
 rpc.register('flush_dns', async (): Promise<FlushDnsResult> => {
   await flushDnsCache(sys.exec.bind(sys), sys.execSilent.bind(sys));
   log('DNS cache flushed');
   return { flushed: true };
-});
-
-rpc.register('status', async (): Promise<StatusResult> => {
-  return {
-    running: true,
-    pid: process.pid,
-    shieldActive: lastState.shieldActive,
-    domainsBlocked: lastState.blockedDomains.length,
-    uptime: Date.now() - startTime,
-  };
 });
 
 rpc.register('restart', async (): Promise<RestartResult> => {
@@ -126,7 +127,6 @@ rpc.register('restart', async (): Promise<RestartResult> => {
 
 // --- Socket server ---
 
-// Clean up old socket
 try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
 const server = net.createServer((socket) => {
@@ -134,13 +134,10 @@ const server = net.createServer((socket) => {
 
   socket.on('data', async (data) => {
     buffer += data.toString();
-
-    // Process complete messages (newline-delimited JSON-RPC)
     let newlineIdx: number;
     while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
       const message = buffer.slice(0, newlineIdx);
       buffer = buffer.slice(newlineIdx + 1);
-
       if (message.trim()) {
         const response = await rpc.dispatch(message);
         socket.write(response + '\n');
@@ -157,6 +154,18 @@ server.listen(SOCKET_PATH, () => {
   fs.chmodSync(SOCKET_PATH, 0o666);
   log(`Daemon listening on ${SOCKET_PATH}`);
   log(`PID: ${process.pid}`);
+});
+
+// --- Reconcile loop ---
+
+void reconciler.tick('boot');
+setInterval(() => void reconciler.tick('timer'), TICK_INTERVAL_MS);
+
+process.on('unhandledRejection', (err) => {
+  log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+});
+process.on('uncaughtException', (err) => {
+  log(`uncaught exception: ${err.stack ?? err.message}`);
 });
 
 // --- Graceful shutdown ---

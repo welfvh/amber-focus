@@ -9,6 +9,8 @@
     <array>
         <string>__NODE_PATH__</string>
         <string>__INSTALL_DIR__/daemon/daemon.cjs</string>
+        <string>--config</string>
+        <string>__HOME_DIR__/.config/amber-focus/config.json</string>
     </array>
 
     <key>RunAtLoad</key>

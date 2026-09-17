@@ -35,6 +35,10 @@ interface VigilantSession {
   startedAt: number;
   evaluations: Evaluation[];
   consecutiveOffTask: number;
+  /** Ticks that failed before producing an evaluation (capture, Keychain, ...). */
+  errors: number;
+  consecutiveErrors: number;
+  lastError: string | null;
   timer: ReturnType<typeof setInterval> | null;
   onViolation: () => Promise<void>;
 }
@@ -76,7 +80,8 @@ async function captureScreenshot(): Promise<string> {
   const filename = `vigilant-${Date.now()}.png`;
   const filepath = path.join(SCREENSHOT_DIR, filename);
 
-  await execFileAsync('screencapture', ['-x', filepath]);
+  // Absolute path: the launchd PATH has no /usr/sbin.
+  await execFileAsync('/usr/sbin/screencapture', ['-x', filepath]);
   return filepath;
 }
 
@@ -191,6 +196,8 @@ export function startSession(
   grantExpiresAt: number,
   onViolation: () => Promise<void>,
 ): string {
+  // One session per domain: a re-grant replaces the running one.
+  stopSessionsForDomain(domain);
   const id = randomUUID();
 
   const session: VigilantSession = {
@@ -201,6 +208,9 @@ export function startSession(
     startedAt: Date.now(),
     evaluations: [],
     consecutiveOffTask: 0,
+    errors: 0,
+    consecutiveErrors: 0,
+    lastError: null,
     timer: null,
     onViolation,
   };
@@ -229,6 +239,7 @@ export function startSession(
       };
 
       session.evaluations.push(evaluation);
+      session.consecutiveErrors = 0;
 
       // Log to persistent file
       logEvaluation(id, {
@@ -255,7 +266,10 @@ export function startSession(
       // Periodic cleanup
       cleanupScreenshots();
     } catch (err) {
-      console.error(`[vigilant] ${id}: evaluation error:`, err);
+      session.errors++;
+      session.consecutiveErrors++;
+      session.lastError = err instanceof Error ? err.message : String(err);
+      console.error(`[vigilant] ${id}: evaluation error (${session.consecutiveErrors} in a row):`, session.lastError);
     }
   }, EVAL_INTERVAL_MS);
 
@@ -285,31 +299,46 @@ export function stopSessionsForDomain(domain: string): void {
   }
 }
 
+/** A session is degraded when its last three ticks failed: monitoring is not happening. */
+const DEGRADED_AFTER_ERRORS = 3;
+
+export interface VigilantSessionStatus {
+  id: string;
+  domain: string;
+  intent: string;
+  startedAt: number;
+  evaluations: number;
+  consecutiveOffTask: number;
+  errors: number;
+  consecutiveErrors: number;
+  lastError: string | null;
+  degraded: boolean;
+  lastEvaluation: Evaluation | null;
+}
+
 /** Get status of the current vigilant session(s). */
 export function getStatus(): {
   active: boolean;
-  sessions: Array<{
-    id: string;
-    domain: string;
-    intent: string;
-    startedAt: number;
-    evaluations: number;
-    consecutiveOffTask: number;
-    lastEvaluation: Evaluation | null;
-  }>;
+  degraded: boolean;
+  sessions: VigilantSessionStatus[];
 } {
-  const sessionList = Array.from(sessions.values()).map(s => ({
+  const sessionList: VigilantSessionStatus[] = Array.from(sessions.values()).map(s => ({
     id: s.id,
     domain: s.domain,
     intent: s.intent,
     startedAt: s.startedAt,
     evaluations: s.evaluations.length,
     consecutiveOffTask: s.consecutiveOffTask,
+    errors: s.errors,
+    consecutiveErrors: s.consecutiveErrors,
+    lastError: s.lastError,
+    degraded: s.consecutiveErrors >= DEGRADED_AFTER_ERRORS,
     lastEvaluation: s.evaluations.length > 0 ? s.evaluations[s.evaluations.length - 1] : null,
   }));
 
   return {
     active: sessionList.length > 0,
+    degraded: sessionList.some(s => s.degraded),
     sessions: sessionList,
   };
 }

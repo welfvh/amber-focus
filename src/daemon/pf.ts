@@ -146,32 +146,6 @@ export class PfManager {
     });
   }
 
-  /** Remove IP-level blocks for a specific domain (used on grant/unblock). */
-  async unblockDomain(domain: string): Promise<void> {
-    await this.queue.enqueue(async () => {
-      try {
-        const rules = await this.sys.readFile(DYNAMIC_PF_PATH);
-        const lines = rules.split('\n').filter(line =>
-          !line.includes(`# enforce:${domain}`) &&
-          !line.includes(`# dynamic:${domain}`) &&
-          !line.endsWith(`# ${domain}`)  // legacy untagged rules
-        );
-        await this.sys.writeFile(DYNAMIC_PF_PATH, lines.join('\n') + '\n');
-        await this.reload();
-      } catch {
-        // Ignore if file doesn't exist
-      }
-    });
-  }
-
-  /** Kill existing TCP connections to a domain's resolved IPs. */
-  async killConnections(domain: string): Promise<void> {
-    const ips = await resolveDomainWithVariants(domain);
-    for (const ip of ips) {
-      await this.sys.execSilent('/sbin/pfctl', ['-k', '0.0.0.0/0', '-k', ip]);
-    }
-  }
-
   private async reload(): Promise<void> {
     await this.sys.execSilent('/sbin/pfctl', ['-f', PF_CONF_PATH]);
   }

@@ -8,12 +8,8 @@
 import {
   type JsonRpcRequest,
   type JsonRpcResponse,
-  type JsonRpcError,
   RPC_ERRORS,
-  ApplyParamsSchema,
-  EnforceParamsSchema,
-  UnblockDomainParamsSchema,
-  SweepBlockedTabsParamsSchema,
+  DAEMON_METHODS,
 } from '../shared/ipc-types.js';
 
 export type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
@@ -28,14 +24,12 @@ export class RpcDispatcher {
   async dispatch(raw: string): Promise<string> {
     let request: JsonRpcRequest;
 
-    // Parse JSON
     try {
       request = JSON.parse(raw);
     } catch {
       return JSON.stringify(makeError(null, RPC_ERRORS.PARSE_ERROR, 'Parse error'));
     }
 
-    // Validate envelope
     if (request.jsonrpc !== '2.0' || !request.method || request.id === undefined) {
       return JSON.stringify(makeError(
         request?.id ?? null,
@@ -44,7 +38,6 @@ export class RpcDispatcher {
       ));
     }
 
-    // Find handler
     const handler = this.handlers.get(request.method);
     if (!handler) {
       return JSON.stringify(makeError(
@@ -54,25 +47,15 @@ export class RpcDispatcher {
       ));
     }
 
-    // Validate params per method
     const params = request.params ?? {};
     const validationError = validateParams(request.method, params);
     if (validationError) {
-      return JSON.stringify(makeError(
-        request.id,
-        RPC_ERRORS.INVALID_PARAMS,
-        validationError,
-      ));
+      return JSON.stringify(makeError(request.id, RPC_ERRORS.INVALID_PARAMS, validationError));
     }
 
-    // Execute
     try {
       const result = await handler(params);
-      return JSON.stringify({
-        jsonrpc: '2.0',
-        id: request.id,
-        result,
-      } satisfies JsonRpcResponse);
+      return JSON.stringify({ jsonrpc: '2.0', id: request.id, result } satisfies JsonRpcResponse);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return JSON.stringify(makeError(request.id, RPC_ERRORS.INTERNAL_ERROR, message));
@@ -81,28 +64,10 @@ export class RpcDispatcher {
 }
 
 function validateParams(method: string, params: Record<string, unknown>): string | null {
+  const schema = (DAEMON_METHODS as Record<string, { parse(v: unknown): unknown } | undefined>)[method];
+  if (!schema) return `Unknown method: ${method}`;
   try {
-    switch (method) {
-      case 'apply':
-        ApplyParamsSchema.parse(params);
-        break;
-      case 'enforce':
-        EnforceParamsSchema.parse(params);
-        break;
-      case 'unblock_domain':
-        UnblockDomainParamsSchema.parse(params);
-        break;
-      case 'sweep_blocked_tabs':
-        SweepBlockedTabsParamsSchema.parse(params);
-        break;
-      case 'flush_dns':
-      case 'status':
-      case 'restart':
-        // No required params
-        break;
-      default:
-        return `Unknown method: ${method}`;
-    }
+    schema.parse(params);
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : 'Invalid params';
@@ -110,9 +75,5 @@ function validateParams(method: string, params: Record<string, unknown>): string
 }
 
 function makeError(id: string | number | null, code: number, message: string): JsonRpcResponse {
-  return {
-    jsonrpc: '2.0',
-    id,
-    error: { code, message },
-  };
+  return { jsonrpc: '2.0', id, error: { code, message } };
 }

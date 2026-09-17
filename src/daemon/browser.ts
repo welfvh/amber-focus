@@ -1,29 +1,17 @@
 /**
- * Browser tab management — close tabs matching a domain via JXA (AppleScript).
+ * Browser tab management via AppleScript — Safari, Arc, Google Chrome.
  *
- * Runs in parallel across Safari, Arc, and Chrome. Failures are silently
- * ignored since the browser might not be running.
+ * All matching is by hostname: a tab matches when its URL host equals one of
+ * the domains or is a subdomain of it. Substring matching against the full URL
+ * is never used — `x.com` must not match `dropbox.com`.
+ *
+ * Failures are ignored: the browser may not be running.
  */
 
 import type { SystemOperations } from './system.js';
 
 const BROWSERS = ['Safari', 'Arc', 'Google Chrome'] as const;
-
-function tabCloseScript(browser: string, domain: string): string {
-  // Escape domain for AppleScript string interpolation
-  const safeDomain = domain.replace(/"/g, '\\"');
-  return `tell application "${browser}"
-  set windowList to every window
-  repeat with w in windowList
-    set tabList to every tab of w
-    repeat with t in tabList
-      if URL of t contains "${safeDomain}" then
-        close t
-      end if
-    end repeat
-  end repeat
-end tell`;
-}
+type Browser = (typeof BROWSERS)[number];
 
 /**
  * Chromium-based browsers cache DNS internally and ignore macOS DNS flushes.
@@ -35,28 +23,24 @@ const CHROMIUM_NETWORK_PATTERNS = [
   'Arc Helper.*network\\.mojom\\.NetworkService',
 ] as const;
 
+function domainList(domains: string[]): string {
+  return domains.map(d => `"${d.replace(/"/g, '\\"').toLowerCase()}"`).join(', ');
+}
+
 /**
- * Build an AppleScript that scans every tab in every window of `browser` and
- * closes any tab whose **hostname** equals or is a subdomain of any of `domains`.
- * Returns the number of tabs closed as a string. The whole sweep happens in
- * one osascript call.
- *
- * Hostname-only matching is critical: substring matching against the full URL
- * causes false positives like `x.com` (Twitter, in the blocklist) matching
- * `dropbox.com` (substring within "drop[box.com]").
+ * One osascript per browser: walk every tab, extract the hostname, collect the
+ * tabs whose host matches, then run `action` on each. Returns the count.
  */
-function sweepTabsScript(browser: string, domains: string[]): string {
-  const list = domains.map(d => `"${d.replace(/"/g, '\\"').toLowerCase()}"`).join(', ');
+function tabScript(browser: Browser, domains: string[], action: string): string {
   return `tell application "${browser}"
-    set blockedDomains to {${list}}
-    set closedCount to 0
+    set targetDomains to {${domainList(domains)}}
+    set matchCount to 0
     try
       repeat with w in every window
-        set tabsToClose to {}
+        set matched to {}
         repeat with t in (every tab of w)
           try
             set u to URL of t
-            -- Extract hostname: between "://" and next "/" (or end)
             set host to ""
             set schemeIdx to offset of "://" in u
             if schemeIdx > 0 then
@@ -67,82 +51,74 @@ function sweepTabsScript(browser: string, domains: string[]): string {
               else
                 set host to rest
               end if
-              -- Strip port if present
               set colonIdx to offset of ":" in host
               if colonIdx > 0 then
                 set host to text 1 thru (colonIdx - 1) of host
               end if
-              -- AppleScript string comparison is case-insensitive by default,
-              -- so we match host vs lowercased domain list directly.
-              -- Match: host equals d OR host ends with "." & d
-              repeat with d in blockedDomains
+              repeat with d in targetDomains
                 set ds to d as text
                 if host is equal to ds then
-                  set end of tabsToClose to t
+                  set end of matched to t
                   exit repeat
                 else if host ends with ("." & ds) then
-                  set end of tabsToClose to t
+                  set end of matched to t
                   exit repeat
                 end if
               end repeat
             end if
           end try
         end repeat
-        repeat with t in tabsToClose
+        repeat with t in matched
           try
-            close t
-            set closedCount to closedCount + 1
+            ${action}
+            set matchCount to matchCount + 1
           end try
         end repeat
       end repeat
     end try
-    return closedCount as text
+    return matchCount as text
   end tell`;
+}
+
+function reloadAction(browser: Browser): string {
+  // Safari tabs have no reload verb; re-setting the URL reloads.
+  return browser === 'Safari' ? 'set URL of t to (URL of t)' : 'reload t';
 }
 
 export class BrowserManager {
   constructor(private sys: SystemOperations) {}
 
-  /** Close tabs containing the domain across all supported browsers. */
-  async closeTabs(domain: string): Promise<boolean> {
+  private async runAll(scriptFor: (b: Browser) => string): Promise<number> {
     const results = await Promise.allSettled(
-      BROWSERS.map(browser =>
-        this.sys.execSilent('osascript', ['-e', tabCloseScript(browser, domain)])
-      )
-    );
-
-    return results.some(r => r.status === 'fulfilled' && r.value !== null);
-  }
-
-  /**
-   * Sweep all browsers and close any tab matching any of `domains`.
-   * One osascript call per browser. Designed for periodic invocation.
-   */
-  async sweepBlockedTabs(domains: string[]): Promise<number> {
-    if (domains.length === 0) return 0;
-    const results = await Promise.allSettled(
-      BROWSERS.map(browser =>
-        this.sys.execSilent('osascript', ['-e', sweepTabsScript(browser, domains)])
-      )
+      BROWSERS.map(browser => this.sys.execSilent('osascript', ['-e', scriptFor(browser)])),
     );
     let total = 0;
     for (const r of results) {
       if (r.status === 'fulfilled' && r.value !== null) {
-        const n = parseInt(String(r.value).trim(), 10);
+        const n = parseInt(String(r.value.stdout).trim(), 10);
         if (!isNaN(n)) total += n;
       }
     }
     return total;
   }
 
+  /** Close every tab whose host matches any of `domains`. Returns the count. */
+  async sweepBlockedTabs(domains: string[]): Promise<number> {
+    if (domains.length === 0) return 0;
+    return this.runAll(b => tabScript(b, domains, 'close t'));
+  }
+
+  /** Reload every tab whose host matches any of `domains` (after an unblock). */
+  async reloadTabs(domains: string[]): Promise<number> {
+    if (domains.length === 0) return 0;
+    return this.runAll(b => tabScript(b, domains, reloadAction(b)));
+  }
+
   /** Flush Chromium-based browser DNS caches by killing their network service processes. */
   async flushBrowserDnsCache(): Promise<boolean> {
     const results = await Promise.allSettled(
-      CHROMIUM_NETWORK_PATTERNS.map(pattern =>
-        this.sys.execSilent('/usr/bin/pkill', ['-f', pattern])
-      )
+      CHROMIUM_NETWORK_PATTERNS.map(pattern => this.sys.execSilent('/usr/bin/pkill', ['-f', pattern])),
     );
-
     return results.some(r => r.status === 'fulfilled' && r.value !== null);
   }
 }

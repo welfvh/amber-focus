@@ -10,15 +10,18 @@
 import fs from 'fs';
 import path from 'path';
 import { normalizeDomain, matchesDomain } from './shared/domains.js';
+import { effectiveBlockedDomains } from './shared/reconcile.js';
 
 const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.config', 'amber-focus');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
-interface Allowance {
+export interface Allowance {
   domain: string;
   expiresAt: number;
   reason: string;
   grantedMinutes: number;
+  /** Set when the grant runs under vigilant monitoring; lets a restarted server resume the session. */
+  vigilantIntent?: string;
 }
 
 interface DelaySession {
@@ -60,6 +63,8 @@ interface RetreatConfig {
 }
 
 interface StoreSchema {
+  /** Desired shield state. The daemon reads this from config.json and converges the OS to it. */
+  shieldActive: boolean;
   blockedDomains: string[];
   delayedDomains: string[];
   blockedPaths: Record<string, string[]>; // { domain: [path patterns] }
@@ -241,6 +246,7 @@ export function domainsForCategories(categories: string[]): string[] {
 const DEFAULT_DELAYED: string[] = ['gmail.com', 'mail.google.com', 'are.na'];
 
 const DEFAULTS: StoreSchema = {
+  shieldActive: true,
   blockedDomains: domainsForCategories(DEFAULT_CATEGORIES),
   delayedDomains: DEFAULT_DELAYED,
   blockedPaths: {},
@@ -283,10 +289,13 @@ function load(): void {
   }
 }
 
+/** Write-then-rename: the daemon polls this file and must never see a half-written one. */
 function save(): void {
   ensureConfigDir();
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+    const tmp = CONFIG_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, CONFIG_FILE);
   } catch (e) {
     console.error('Failed to save config:', e);
   }
@@ -308,14 +317,16 @@ export const store = {
 
 // Exported functions
 
+/** True when the domain (or a parent of it) is on the blocklist, allowances aside. */
+export function isOnBlocklist(domain: string): boolean {
+  const normalized = normalizeDomain(domain);
+  return store.get('blockedDomains', []).some(b => matchesDomain(normalized, b));
+}
+
+/** Desired state for one domain: on the blocklist and not covered by an active allowance. */
 export function isDomainBlocked(domain: string): boolean {
   const normalized = normalizeDomain(domain);
-  const blocked = store.get('blockedDomains', []);
-  const isInBlocklist = blocked.some(b => {
-    const nb = normalizeDomain(b);
-    return normalized === nb || normalized.endsWith('.' + nb);
-  });
-  if (!isInBlocklist) return false;
+  if (!isOnBlocklist(normalized)) return false;
 
   const allowances = store.get('allowances', []);
   const now = Date.now();
@@ -325,7 +336,12 @@ export function isDomainBlocked(domain: string): boolean {
   return !hasAllowance;
 }
 
-export function grantAllowance(domain: string, minutes: number, reason: string): Allowance {
+export function grantAllowance(
+  domain: string,
+  minutes: number,
+  reason: string,
+  vigilantIntent?: string,
+): Allowance {
   const normalized = normalizeDomain(domain);
   const allowances = store.get('allowances', []);
   const filtered = allowances.filter(a => a.domain !== normalized);
@@ -334,6 +350,7 @@ export function grantAllowance(domain: string, minutes: number, reason: string):
     expiresAt: Date.now() + minutes * 60 * 1000,
     reason,
     grantedMinutes: minutes,
+    ...(vigilantIntent ? { vigilantIntent } : {}),
   };
   store.set('allowances', [...filtered, allowance]);
   return allowance;
@@ -349,30 +366,17 @@ export function getBlockedDomains(): string[] {
   return store.get('blockedDomains', []);
 }
 
-// Returns blocked domains minus those with active allowances (what should actually be in /etc/hosts)
+/** Blocked domains minus those covered by an active allowance — what the daemon converges to. */
 export function getEffectivelyBlockedDomains(): string[] {
-  const blocked = store.get('blockedDomains', []);
-  const allowances = store.get('allowances', []);
-  const now = Date.now();
+  return effectiveBlockedDomains(store.get('blockedDomains', []), store.get('allowances', []), Date.now());
+}
 
-  // Get domains with active allowances
-  const allowedDomains = new Set(
-    allowances
-      .filter(a => a.expiresAt > now)
-      .map(a => normalizeDomain(a.domain))
-  );
+export function isShieldActive(): boolean {
+  return store.get('shieldActive', true);
+}
 
-  // Filter out allowed domains and their subdomains
-  return blocked.filter(domain => {
-    const normalized = normalizeDomain(domain);
-    // Check if this domain or its parent has an allowance
-    for (const allowed of allowedDomains) {
-      if (normalized === allowed || normalized.endsWith('.' + allowed)) {
-        return false;
-      }
-    }
-    return true;
-  });
+export function setShieldActive(active: boolean): void {
+  store.set('shieldActive', active);
 }
 
 export function addBlockedDomain(domain: string): void {
@@ -390,13 +394,19 @@ export function removeBlockedDomain(domain: string): void {
 }
 
 export function getActiveAllowances(): Allowance[] {
+  const now = Date.now();
+  return store.get('allowances', []).filter(a => a.expiresAt > now);
+}
+
+/** Drop expired allowances from the store. Returns the ones that expired. */
+export function pruneExpiredAllowances(): Allowance[] {
   const allowances = store.get('allowances', []);
   const now = Date.now();
-  const active = allowances.filter(a => a.expiresAt > now);
-  if (active.length !== allowances.length) {
-    store.set('allowances', active);
+  const expired = allowances.filter(a => a.expiresAt <= now);
+  if (expired.length > 0) {
+    store.set('allowances', allowances.filter(a => a.expiresAt > now));
   }
-  return active;
+  return expired;
 }
 
 export function getAllowanceRemaining(domain: string): number {

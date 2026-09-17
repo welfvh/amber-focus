@@ -20,27 +20,16 @@ import {
   getBlockedDomains,
   getActiveAllowances,
   getDelayedDomains,
-  isDomainBlocked,
-  getAllowanceRemaining,
   grantAllowance,
-  getEffectivelyBlockedDomains,
   addBlockedDomain,
   removeBlockedDomain,
   isHardLocked,
   getHardLockoutUntil,
   getActiveHardLockouts,
 } from './store.js';
-import { handleVigilantViolation } from './actions.js';
+import { applyDesiredState, describeDomain, daemonHealthy, startVigilantForAllowance } from './actions.js';
+import { getDaemonStatus } from './daemon-client.js';
 import {
-  isDaemonRunning,
-  enableBlocking,
-  enforceDomain as enforceBlockViaDaemon,
-  flushDns as flushDnsCache,
-  unblockDomain,
-} from './daemon-client.js';
-import {
-  startSession as startVigilantSession,
-  stopSessionsForDomain,
   getStatus as getVigilantStatus,
   getRecentLog as getVigilantLog,
 } from './vigilant.js';
@@ -83,10 +72,14 @@ function createMcpServer(shieldActiveGetter: () => boolean): McpServer {
     'Get the current state of the amber focus: whether it\'s active, daemon health, number of blocked domains, and any active time-limited allowances.',
     {},
     async () => {
-      const daemonRunning = await isDaemonRunning();
+      const daemon = await getDaemonStatus();
       const result = {
         shieldActive: shieldActiveGetter(),
-        daemonRunning,
+        daemonRunning: daemon !== null,
+        healthy: daemonHealthy(daemon),
+        converged: daemon?.converged ?? false,
+        lastError: daemon?.lastError ?? (daemon ? null : 'daemon unreachable'),
+        legacyBlockedAllowed: daemon?.legacyBlockedAllowed ?? [],
         blockedDomains: getBlockedDomains().length,
         activeAllowances: getActiveAllowances(),
         hardLockouts: getActiveHardLockouts(),
@@ -107,13 +100,10 @@ function createMcpServer(shieldActiveGetter: () => boolean): McpServer {
 
   server.tool(
     'amber_check_domain',
-    'Check whether a specific domain is currently blocked and if it has an active allowance.',
+    'Check a domain. `blocked` is what the OS enforces right now (read from /etc/hosts); `desiredBlocked` is the intent; `source` says which hosts section blocks it (a "legacy" source overrides an allowance).',
     { domain: z.string().describe('The domain to check, e.g. "twitter.com"') },
     async ({ domain }) => {
-      const blocked = isDomainBlocked(domain);
-      const allowanceMinutes = getAllowanceRemaining(domain);
-      const locked = isHardLocked(domain);
-      const result = { domain, blocked, allowanceMinutes, shieldActive: shieldActiveGetter(), locked };
+      const result = await describeDomain(domain);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -152,7 +142,7 @@ IMPORTANT: Before calling this tool, you MUST:
 
 Twitter/X and YouTube are HARD LOCKED until March 2026. This tool will refuse those domains.
 
-VIGILANT MODE: Set vigilant=true + intent to enable AI screenshot monitoring. The system takes screenshots every ~10s, evaluates on-task behavior via Claude Haiku, shows warning overlays on drift, and auto-revokes access after 4 consecutive off-task evaluations. Use this for high-risk sites or when the user's stated intent is narrow.`,
+VIGILANT MODE: Set vigilant=true + intent to enable AI screenshot monitoring. The system takes screenshots every ~10s, evaluates on-task behavior via Claude Haiku, shows warning overlays on drift, and auto-revokes access after 3 consecutive off-task evaluations. Use this for high-risk sites or when the user's stated intent is narrow.`,
     {
       domain: z.string().describe('The domain to grant access to, e.g. "reddit.com"'),
       minutes: z.number().min(1).max(30).describe('Duration in minutes (1-30)'),
@@ -173,42 +163,21 @@ VIGILANT MODE: Set vigilant=true + intent to enable AI screenshot monitoring. Th
         };
       }
 
-      const allowance = grantAllowance(domain, minutes, reason);
-
-      // Unblock domain in daemon (remove pf rules, close stale tabs)
-      await unblockDomain(domain);
-
-      if (shieldActiveGetter()) {
-        const applied = await enableBlocking(getEffectivelyBlockedDomains());
-        if (!applied) {
-          console.error(`[mcp:grant] Failed to apply blocking state for ${domain} grant`);
-        }
-      }
-
-      // Start vigilant monitoring session if requested
-      let vigilantSessionId: string | null = null;
-      if (vigilant && intent) {
-        try {
-          vigilantSessionId = startVigilantSession(
-            domain,
-            intent,
-            allowance.expiresAt,
-            () => handleVigilantViolation(domain, shieldActiveGetter),
-          );
-        } catch (err) {
-          console.error('[mcp] Failed to start vigilant session:', err);
-        }
-      }
+      const allowance = grantAllowance(domain, minutes, reason, vigilant && intent ? intent : undefined);
+      const outcome = await applyDesiredState(`mcp-grant:${domain}`);
+      const vigilantSessionId = startVigilantForAllowance(allowance);
 
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             granted: true,
-            domain,
+            domain: allowance.domain,
             minutes,
             reason,
             expiresAt: new Date(allowance.expiresAt).toISOString(),
+            ...outcome,
+            effective: await describeDomain(allowance.domain),
             warning: 'Access will auto-expire. Connections will be killed and browser tabs closed on expiry.',
             ...(vigilantSessionId ? {
               vigilant: true,
@@ -227,16 +196,12 @@ VIGILANT MODE: Set vigilant=true + intent to enable AI screenshot monitoring. Th
     { domain: z.string().describe('The domain to block, e.g. "example.com"') },
     async ({ domain }) => {
       addBlockedDomain(domain);
-
-      if (shieldActiveGetter()) {
-        await enableBlocking(getEffectivelyBlockedDomains());
-        await enforceBlockViaDaemon(domain);
-      }
+      const outcome = await applyDesiredState(`mcp-block:${domain}`);
 
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ blocked: true, domain }, null, 2),
+          text: JSON.stringify({ blocked: true, domain, ...outcome }, null, 2),
         }],
       };
     },
@@ -262,15 +227,12 @@ Hard-locked domains (configured via API) will be refused.`,
       }
 
       removeBlockedDomain(domain);
-
-      if (shieldActiveGetter()) {
-        await enableBlocking(getEffectivelyBlockedDomains());
-      }
+      const outcome = await applyDesiredState(`mcp-unblock:${domain}`);
 
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ unblocked: true, domain }, null, 2),
+          text: JSON.stringify({ unblocked: true, domain, ...outcome }, null, 2),
         }],
       };
     },

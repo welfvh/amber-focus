@@ -109,6 +109,7 @@ sed -e "s|__NODE_PATH__|$NODE_PATH|g" \
 # Daemon plist (root)
 sed -e "s|__NODE_PATH__|$NODE_PATH|g" \
     -e "s|__INSTALL_DIR__|$SCRIPT_DIR|g" \
+    -e "s|__HOME_DIR__|$HOME|g" \
     "$SCRIPT_DIR/daemon/com.amberfocus.daemon.plist.template" \
     > "$SCRIPT_DIR/daemon/$DAEMON_PLIST_NAME.plist"
 
@@ -118,6 +119,7 @@ echo "Installing daemon (requires sudo)..."
 sudo cp "$SCRIPT_DIR/daemon/$DAEMON_PLIST_NAME.plist" /Library/LaunchDaemons/
 sudo chown root:wheel "/Library/LaunchDaemons/$DAEMON_PLIST_NAME.plist"
 sudo launchctl bootout system "/Library/LaunchDaemons/$DAEMON_PLIST_NAME.plist" 2>/dev/null || true
+sudo launchctl enable system/$DAEMON_PLIST_NAME
 sudo launchctl bootstrap system "/Library/LaunchDaemons/$DAEMON_PLIST_NAME.plist"
 echo "Daemon installed."
 

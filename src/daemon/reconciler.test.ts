@@ -1,0 +1,161 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Reconciler } from './reconciler.js';
+import type { SystemOperations } from './system.js';
+import { LEGACY_MARKER_START, LEGACY_MARKER_END } from '../shared/reconcile.js';
+
+const CONFIG = '/cfg/config.json';
+const HOSTS = '/etc/hosts';
+
+function makeSys() {
+  const files = new Map<string, string>();
+  const writes: string[] = [];
+  const sys: SystemOperations = {
+    async readFile(p) {
+      const v = files.get(p);
+      if (v === undefined) throw new Error(`ENOENT ${p}`);
+      return v;
+    },
+    async writeFile(p, c) { files.set(p, c); },
+    async writeFileAtomic(p, c) { files.set(p, c); writes.push(p); },
+    async fileExists(p) { return files.has(p); },
+    async exec() { return { stdout: '', stderr: '' }; },
+    async execSilent() { return { stdout: '', stderr: '' }; },
+  };
+  return { sys, files, writes };
+}
+
+function makeDeps() {
+  const { sys, files, writes } = makeSys();
+  const pf = {
+    updateStaticRules: vi.fn(async () => {}),
+    refreshDynamicRules: vi.fn(async () => {}),
+    blockDomain: vi.fn(async () => ['1.2.3.4']),
+  };
+  const browser = {
+    sweepBlockedTabs: vi.fn(async () => 0),
+    reloadTabs: vi.fn(async () => 1),
+    flushBrowserDnsCache: vi.fn(async () => true),
+  };
+  let now = 1_000_000;
+  const r = new Reconciler({
+    sys,
+    pf: pf as never,
+    browser: browser as never,
+    log: () => {},
+    hostsPath: HOSTS,
+    now: () => now,
+    sleep: async () => {},
+  });
+  r.configPath = CONFIG;
+  files.set(HOSTS, '127.0.0.1 localhost\n');
+  const setConfig = (cfg: unknown) => files.set(CONFIG, JSON.stringify(cfg));
+  const advance = (ms: number) => { now += ms; };
+  return { r, files, writes, pf, browser, setConfig, advance };
+}
+
+describe('Reconciler', () => {
+  let d: ReturnType<typeof makeDeps>;
+  beforeEach(() => { d = makeDeps(); });
+
+  it('writes hosts and pf on boot, then stays idle when nothing changed', async () => {
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
+    const s1 = await d.r.tick('boot');
+    expect(s1.converged).toBe(true);
+    expect(s1.domainsBlocked).toBe(2);
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
+    expect(d.writes).toEqual([HOSTS]);
+    expect(d.pf.updateStaticRules).toHaveBeenCalledWith(true);
+    expect(d.pf.refreshDynamicRules).toHaveBeenCalledWith(['a.com', 'b.com'], true);
+    expect(d.pf.blockDomain).not.toHaveBeenCalled(); // fresh install: no prior section to diff against
+    expect(d.browser.reloadTabs).not.toHaveBeenCalled();
+
+    const s2 = await d.r.tick('timer');
+    expect(s2.converged).toBe(true);
+    expect(d.writes).toEqual([HOSTS]); // no second write
+    expect(d.pf.refreshDynamicRules).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a grant: drops the domain from hosts, reloads its tabs, and re-blocks on expiry', async () => {
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
+    await d.r.tick('boot');
+
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000, reason: 'x' }] });
+    const granted = await d.r.tick('config-change');
+    expect(granted.converged).toBe(true);
+    expect(granted.domainsBlocked).toBe(1);
+    expect(d.files.get(HOSTS)).not.toContain('0.0.0.0 a.com');
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 b.com');
+    expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
+    expect(d.browser.reloadTabs).toHaveBeenCalledWith(['a.com']);
+    expect(d.pf.blockDomain).not.toHaveBeenCalled();
+
+    d.advance(120_000);
+    const expired = await d.r.tick('timer');
+    expect(expired.domainsBlocked).toBe(2);
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
+    expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
+    expect(d.browser.sweepBlockedTabs).toHaveBeenCalledWith(['a.com']);
+  });
+
+  it('keeps the OS untouched and reports the error when config.json is unreadable', async () => {
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
+    await d.r.tick('boot');
+    const before = d.files.get(HOSTS);
+
+    d.files.set(CONFIG, '{ not json');
+    const s = await d.r.tick('config-change');
+    expect(s.converged).toBe(false);
+    expect(s.lastError).toMatch(/JSON/);
+    expect(d.files.get(HOSTS)).toBe(before);
+
+    d.files.set(CONFIG, JSON.stringify({ allowances: [{ domain: 5 }] }));
+    const s2 = await d.r.tick('config-change');
+    expect(s2.converged).toBe(false);
+    expect(s2.lastError).toMatch(/invalid/);
+  });
+
+  it('reports when the config path is unknown', async () => {
+    d.r.configPath = null;
+    const s = await d.r.tick('boot');
+    expect(s.converged).toBe(false);
+    expect(s.lastError).toMatch(/config path/);
+  });
+
+  it('removes the section when the shield is switched off', async () => {
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [], shieldActive: true });
+    await d.r.tick('boot');
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [], shieldActive: false });
+    const s = await d.r.tick('config-change');
+    expect(s.shieldActive).toBe(false);
+    expect(d.files.get(HOSTS)).toBe('127.0.0.1 localhost\n');
+    expect(d.pf.updateStaticRules).toHaveBeenLastCalledWith(false);
+    expect(d.browser.reloadTabs).toHaveBeenCalledWith(['a.com']);
+  });
+
+  it('flags allowed domains that the legacy section still blocks', async () => {
+    d.files.set(HOSTS, `127.0.0.1 localhost\n${LEGACY_MARKER_START}\n0.0.0.0 a.com\n${LEGACY_MARKER_END}\n`);
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [{ domain: 'a.com', expiresAt: 2_000_000 }] });
+    const s = await d.r.tick('boot');
+    expect(s.converged).toBe(true);
+    expect(s.legacyBlockedAllowed).toEqual(['a.com']);
+  });
+
+  it('migrates an old-format section without tab side effects', async () => {
+    d.files.set(HOSTS, `127.0.0.1 localhost\n\n# BEGIN AMBER FOCUS BLOCK\n# Generated: old\n0.0.0.0 a.com\n:: a.com\n0.0.0.0 www.a.com\n# END AMBER FOCUS BLOCK\n`);
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
+    const s = await d.r.tick('boot');
+    expect(s.converged).toBe(true);
+    expect(d.files.get(HOSTS)).toContain('# Domains: a.com');
+    expect(d.browser.reloadTabs).not.toHaveBeenCalled();
+    expect(d.browser.flushBrowserDnsCache).not.toHaveBeenCalled();
+    expect(d.pf.blockDomain).not.toHaveBeenCalled();
+  });
+
+  it('serializes overlapping ticks so each caller sees a full pass', async () => {
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
+    const [s1, s2] = await Promise.all([d.r.tick('a'), d.r.tick('b')]);
+    expect(s1.lastReason).toBe('a');
+    expect(s2.lastReason).toBe('b');
+    expect(d.writes).toEqual([HOSTS]);
+  });
+});
