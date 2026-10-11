@@ -241,7 +241,12 @@ function ensureConfigDir(): void {
 
 function load(): void {
   ensureConfigDir();
-  if (!fs.existsSync(CONFIG_FILE)) return;
+  if (!fs.existsSync(CONFIG_FILE)) {
+    // First start: the daemon converges from this file and applies nothing without it.
+    save(data);
+    console.log(`No config.json: wrote the defaults to ${CONFIG_FILE}`);
+    return;
+  }
   const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
   try {
     data = { ...DEFAULTS, ...JSON.parse(raw) };

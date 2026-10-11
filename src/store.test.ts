@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -80,5 +80,27 @@ describe('save failure', () => {
     }
     expect(store.getActiveAllowances().map(a => a.domain)).toContain('savefail.com');
     expect(onDisk().allowances.map((a: { domain: string }) => a.domain)).toContain('savefail.com');
+  });
+});
+
+/** A separate store module instance on its own HOME; `setup` prepares the config dir first. */
+async function freshStore(setup: (dir: string) => void) {
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'amber-store-'));
+  const dir = path.join(h, '.config', 'amber-focus');
+  fs.mkdirSync(dir, { recursive: true });
+  setup(dir);
+  process.env.HOME = h;
+  vi.resetModules();
+  const mod: typeof import('./store.js') = await import('./store.js');
+  return { mod, file: path.join(dir, 'config.json') };
+}
+
+describe('first start', () => {
+  it('writes the defaults so the daemon has a config to converge to', async () => {
+    const { mod, file } = await freshStore(() => {});
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(saved.shieldActive).toBe(true);
+    expect(saved.blockedDomains.length).toBeGreaterThan(0);
+    expect(saved.blockedDomains).toEqual(mod.getBlockedDomains());
   });
 });
