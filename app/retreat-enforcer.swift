@@ -7,13 +7,13 @@
 //   - NSWorkspace launch observer: instant kill on app launch
 //   - 5s ticker: catches apps that were already running when a window started
 //
-// Quitting is polite first: terminate() lets an app ask to save. An app that
-// was launched while the window is active and still runs GRACE_S later is
-// force-quit (it cannot hold unsaved work from before the window). An app that
-// was already running when the window began is never force-quit, so a save
-// prompt it shows cannot lose work; it gets a fresh quit request every minute.
+// Quitting is always polite: terminate() is the same request as Cmd-Q, so the
+// app may ask to save and the user may cancel. The enforcer never force-quits,
+// because a force-quit discards unsaved work. An app that still runs RETRY_S
+// after a request gets a new request, and one log line per request.
 //
-// AMBER_FOCUS_CONFIG overrides the config path (same variable as the daemon).
+// AMBER_FOCUS_CONFIG overrides the config path, so a test run can use a scratch
+// config. The log goes next to the config file.
 //
 // Build: swiftc retreat-enforcer.swift -o retreat-enforcer -O
 // Run as user LaunchAgent (NOT root — NSWorkspace targets the session user).
@@ -25,9 +25,7 @@ let CONFIG_PATH = ProcessInfo.processInfo.environment["AMBER_FOCUS_CONFIG"]
     ?? NSString(string: "~/.config/amber-focus/config.json").expandingTildeInPath
 let LOG_PATH = (CONFIG_PATH as NSString).deletingLastPathComponent + "/retreat-enforcer.log"
 
-/// Seconds a quit request may take before an app launched inside the window is force-quit.
-let GRACE_S: TimeInterval = 10
-/// Seconds between repeated quit requests to an app that predates the window.
+/// Seconds between repeated quit requests to an app that is still running.
 let RETRY_S: TimeInterval = 60
 
 // System-essential bundle IDs that are never killed (would break the OS).
@@ -120,26 +118,20 @@ func loadConfig() -> RetreatConfig {
 
 let myPID = ProcessInfo.processInfo.processIdentifier
 
-/// When the current active stretch began (nil while retreat is inactive).
-var activeSince: Date? = nil
+/// Whether retreat was active at the last check (for the transition log lines).
+var retreatActive = false
 /// pid → time of the last quit request.
 var quitRequested: [pid_t: Date] = [:]
 
-/// Track the active stretch; returns whether retreat is active now.
-func updateActive(_ config: RetreatConfig, now: Date = Date()) -> Bool {
-    if config.isActiveNow(now) {
-        if activeSince == nil {
-            activeSince = now
-            log("retreat window active")
-        }
-        return true
-    }
-    if activeSince != nil {
-        activeSince = nil
+/// Log window transitions; returns whether retreat is active now.
+func updateActive(_ config: RetreatConfig) -> Bool {
+    let active = config.isActiveNow()
+    if active != retreatActive {
+        retreatActive = active
         quitRequested.removeAll()
-        log("retreat window ended")
+        log(active ? "retreat window active" : "retreat window ended")
     }
-    return false
+    return active
 }
 
 func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig, now: Date = Date()) {
@@ -159,22 +151,15 @@ func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig, now: D
     guard shouldKill else { return }
 
     let pid = app.processIdentifier
-    let name = app.localizedName ?? "?"
-    guard let requested = quitRequested[pid] else {
-        quitRequested[pid] = now
-        log("terminate \(bundleID) (\(name))\(app.terminate() ? "" : " — refused")")
-        return
+    var note = ""
+    if let last = quitRequested[pid] {
+        let waited = now.timeIntervalSince(last)
+        guard waited >= RETRY_S else { return }
+        note = " — still running \(Int(waited))s after the last request"
     }
-    let waited = now.timeIntervalSince(requested)
-    let launchedInWindow = (app.launchDate ?? .distantPast) >= (activeSince ?? .distantFuture)
-    if launchedInWindow && waited >= GRACE_S {
-        quitRequested[pid] = now
-        log("forceTerminate \(bundleID) (\(name)) — still running \(Int(waited))s after quit request\(app.forceTerminate() ? "" : " — failed")")
-    } else if !launchedInWindow && waited >= RETRY_S {
-        quitRequested[pid] = now
-        log("terminate again \(bundleID) (\(name)) — predates the window, never forced")
-        app.terminate()
-    }
+    quitRequested[pid] = now
+    let sent = app.terminate()
+    log("terminate \(bundleID) (\(app.localizedName ?? "?"))\(note)\(sent ? "" : " — request not sent")")
 }
 
 func sweep() {

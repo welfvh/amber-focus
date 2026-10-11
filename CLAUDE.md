@@ -28,7 +28,7 @@ Claude ──MCP──> Server (:8053) ──JSON-RPC──> Daemon (root)
                   │
                   └─reads─> retreat-enforcer (user LaunchAgent)
                             NSWorkspace observer + 5s app sweep
-                            → forceTerminate non-allowlisted apps
+                            → politely quit non-allowlisted apps
 ```
 
 ## Key Files
