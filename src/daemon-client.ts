@@ -25,16 +25,18 @@ function logError(msg: string, err?: unknown): void {
   console.error(`[daemon-client] ${msg}`, err instanceof Error ? err.message : err ?? '');
 }
 
-async function rpcCall<T>(
+/** One request, one response line. Exported for tests (socketPath). */
+export async function rpcCall<T>(
   method: string,
   params?: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  socketPath = DAEMON_SOCKET,
 ): Promise<T> {
   const id = ++requestId;
   const request: JsonRpcRequest = { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) };
 
   return new Promise<T>((resolve, reject) => {
-    const socket = net.createConnection(DAEMON_SOCKET);
+    const socket = net.createConnection(socketPath);
     let buffer = '';
     let settled = false;
 
@@ -76,6 +78,15 @@ async function rpcCall<T>(
         settled = true;
         clearTimeout(timer);
         reject(new Error(`Daemon connection failed: ${err.message}. Is the daemon running?`));
+      }
+    });
+
+    // The daemon exited or dropped the connection before it replied.
+    socket.on('close', () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`Daemon closed the connection before replying: ${method}`));
       }
     });
   });
