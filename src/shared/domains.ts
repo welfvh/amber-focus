@@ -70,6 +70,27 @@ export function collectAllDomainsWithVariants(domains: string[]): string[] {
  * don't grant/unblock those. pf resolution is only needed for domains where
  * the grant→unblock→reblock cycle matters.
  */
+/**
+ * iCloud Private Relay ingress hosts. Blocked in /etc/hosts while the shield is
+ * on, whatever the blocklist says.
+ *
+ * Private Relay resolves sites through its own encrypted DNS and sends traffic
+ * to Apple's relay, so neither the hosts entries nor the pf rules of a blocked
+ * site apply to Safari while it is on. When these hosts do not resolve, Private
+ * Relay does not start and Safari connects directly, through both layers. This
+ * is Apple's documented way to turn Private Relay off for a network
+ * (https://support.apple.com/en-us/102022), applied to this Mac.
+ *
+ * Hosts only, never pf: the relay IPs are in Apple's 17.0.0.0/8, which other
+ * Apple services share.
+ */
+export const PRIVATE_RELAY_HOSTS = [
+  'mask.icloud.com',
+  'mask-h2.icloud.com',
+  'mask-api.icloud.com',
+  'mask.apple-dns.net', // CNAME target of mask-h2.icloud.com
+] as const;
+
 export const PRIORITY_DOMAINS = [
   // Social
   'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'tiktok.com',

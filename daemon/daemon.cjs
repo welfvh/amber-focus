@@ -106,6 +106,13 @@ function collectAllDomainsWithVariants(domains) {
   }
   return Array.from(all);
 }
+var PRIVATE_RELAY_HOSTS = [
+  "mask.icloud.com",
+  "mask-h2.icloud.com",
+  "mask-api.icloud.com",
+  "mask.apple-dns.net"
+  // CNAME target of mask-h2.icloud.com
+];
 var PRIORITY_DOMAINS = [
   // Social
   "twitter.com",
@@ -14309,6 +14316,13 @@ function renderHostsSection(state, generatedAt) {
   for (const host of variants) {
     lines.push(`0.0.0.0 ${host}`);
     lines.push(`:: ${host}`);
+  }
+  if (state.shieldActive) {
+    lines.push("# iCloud Private Relay ingress (see PRIVATE_RELAY_HOSTS)");
+    for (const host of PRIVATE_RELAY_HOSTS) {
+      lines.push(`0.0.0.0 ${host}`);
+      lines.push(`:: ${host}`);
+    }
   }
   lines.push(MARKER_END);
   return lines.join("\n") + "\n";
