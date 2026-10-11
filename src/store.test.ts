@@ -104,3 +104,23 @@ describe('first start', () => {
     expect(saved.blockedDomains).toEqual(mod.getBlockedDomains());
   });
 });
+
+describe('unreadable config.json', () => {
+  it.skipIf(process.getuid?.() === 0)('keeps the server up, refuses every change, and recovers once readable', async () => {
+    const original = JSON.stringify({ blockedDomains: ['kept.com'] });
+    let file = '';
+    const { mod } = await freshStore(dir => {
+      file = path.join(dir, 'config.json');
+      fs.writeFileSync(file, original);
+      fs.chmodSync(file, 0o000);
+    });
+    try {
+      expect(() => mod.getBlockedDomains()).toThrow(/cannot read/);
+      expect(() => mod.addBlockedDomain('new.com')).toThrow(/cannot read/);
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    expect(mod.getBlockedDomains()).toEqual(['kept.com']);
+  });
+});

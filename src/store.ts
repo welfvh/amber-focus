@@ -230,8 +230,9 @@ const DEFAULTS: StoreSchema = {
   },
 };
 
-// In-memory cache
-let data: StoreSchema = { ...DEFAULTS };
+// In-memory cache. Null until config.json has been read: a file that cannot
+// be read is retried on every store access and never overwritten.
+let data: StoreSchema | null = null;
 
 function ensureConfigDir(): void {
   if (!fs.existsSync(CONFIG_DIR)) {
@@ -239,24 +240,36 @@ function ensureConfigDir(): void {
   }
 }
 
-function load(): void {
+function load(): StoreSchema {
   ensureConfigDir();
-  if (!fs.existsSync(CONFIG_FILE)) {
-    // First start: the daemon converges from this file and applies nothing without it.
-    save(data);
-    console.log(`No config.json: wrote the defaults to ${CONFIG_FILE}`);
-    return;
-  }
-  const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+  let raw: string;
   try {
-    data = { ...DEFAULTS, ...JSON.parse(raw) };
+    raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`cannot read ${CONFIG_FILE} (${e instanceof Error ? e.message : e}); nothing is saved until it is readable`);
+    }
+    // First start: the daemon converges from this file and applies nothing without it.
+    const defaults = { ...DEFAULTS };
+    save(defaults);
+    console.log(`No config.json: wrote the defaults to ${CONFIG_FILE}`);
+    return defaults;
+  }
+  try {
+    return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch (e) {
     // Keep the unreadable file before the next save replaces it with defaults.
     const copy = `${CONFIG_FILE}.corrupt-${Date.now()}`;
     fs.copyFileSync(CONFIG_FILE, copy);
     console.error(`config.json is not valid JSON (${e instanceof Error ? e.message : e}); saved a copy to ${copy} and started from defaults`);
-    data = { ...DEFAULTS };
+    return { ...DEFAULTS };
   }
+}
+
+/** The config in memory, read on first use. A failed read throws; the next access tries again. */
+function current(): StoreSchema {
+  data ??= load();
+  return data;
 }
 
 /**
@@ -271,17 +284,22 @@ function save(next: StoreSchema): void {
   fs.renameSync(tmp, CONFIG_FILE);
 }
 
-// Initialize on module load
-load();
+// Read on module load. An unreadable file must not stop the server: report it
+// here; every store access retries and throws until the file is readable.
+try {
+  current();
+} catch (e) {
+  console.error(e instanceof Error ? e.message : e);
+}
 
 // Store-like interface
 export const store = {
   get<K extends keyof StoreSchema>(key: K, defaultValue?: StoreSchema[K]): StoreSchema[K] {
-    return data[key] ?? defaultValue ?? DEFAULTS[key];
+    return current()[key] ?? defaultValue ?? DEFAULTS[key];
   },
   /** Persist first, then update memory: a failed write throws and changes nothing. */
   set<K extends keyof StoreSchema>(key: K, value: StoreSchema[K]): void {
-    const next = { ...data };
+    const next = { ...current() };
     next[key] = value;
     save(next);
     data = next;

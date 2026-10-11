@@ -383,9 +383,14 @@ async function start(): Promise<void> {
     console.error('Warning: daemon not running. Blocks stay as they are until it is back.');
   }
 
-  // Resume vigilant monitoring for grants that survived a server restart
-  for (const allowance of getActiveAllowances()) {
-    startVigilantForAllowance(allowance);
+  // Resume vigilant monitoring for grants that survived a server restart.
+  // An unreadable config.json must not keep the API from starting.
+  try {
+    for (const allowance of getActiveAllowances()) {
+      startVigilantForAllowance(allowance);
+    }
+  } catch (err) {
+    console.error('[vigilant] cannot resume sessions:', err instanceof Error ? err.message : err);
   }
 
   setInterval(() => { checkAllowanceExpiry().catch(err => console.error('[expiry]', err)); }, EXPIRY_POLL_MS);
@@ -395,8 +400,12 @@ async function start(): Promise<void> {
   const server = http.createServer(app);
   server.listen(API_PORT, '127.0.0.1', () => {
     console.log(`Amber Focus API running on http://127.0.0.1:${API_PORT}`);
-    console.log(`   Shield active: ${isShieldActive()} (daemon ${boot.daemonRunning ? (boot.applied ? 'converged' : 'not converged') : 'unreachable'})`);
-    console.log(`   Blocked domains: ${getBlockedDomains().length} (${getEffectivelyBlockedDomains().length} effective)`);
+    try {
+      console.log(`   Shield active: ${isShieldActive()} (daemon ${boot.daemonRunning ? (boot.applied ? 'converged' : 'not converged') : 'unreachable'})`);
+      console.log(`   Blocked domains: ${getBlockedDomains().length} (${getEffectivelyBlockedDomains().length} effective)`);
+    } catch (err) {
+      console.error('[server]', err instanceof Error ? err.message : err);
+    }
   });
 }
 

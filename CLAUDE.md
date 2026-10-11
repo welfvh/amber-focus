@@ -61,7 +61,7 @@ enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlo
 | `src/actions.ts` | `grant` / `revoke` (the one path for both), `applyDesiredState`, OS truth (`osBlockState`, `describeDomain`), vigilant hooks |
 | `src/browser.ts` | List, close, reload tabs in Chrome, Safari, Arc via JXA. Data goes in as a JSON argument, never into script source |
 | `src/notify.ts` | macOS notification banner (JXA, arguments only) |
-| `src/store.ts` | `config.json`: `shieldActive`, blocklist, allowances, hard lockouts, retreat. Atomic writes; unknown keys kept; a corrupt file is copied aside before defaults load |
+| `src/store.ts` | `config.json`: `shieldActive`, blocklist, allowances, hard lockouts, retreat. Atomic writes; a failed write throws and changes nothing; unknown keys kept; a missing file gets the defaults; a corrupt file is copied aside before defaults load; an unreadable file is never overwritten |
 | `src/vigilant.ts` | Vigilant mode (see below) |
 | `src/daemon-client.ts` | JSON-RPC client: `reconcile`, `status`, `flush_dns`, `restart`. Returns null when the daemon is unreachable |
 | `src/daemon/index.ts` | Daemon entry: config path discovery, reconcile loop, RPC handlers |
