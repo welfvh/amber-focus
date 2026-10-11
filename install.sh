@@ -5,11 +5,7 @@
 # What it does:
 #   1. Checks prerequisites (macOS, Xcode CLT, Node.js 18+, Claude Code)
 #   2. Clones the repo to ~/dev/amber-focus (or pulls if it exists)
-#   3. Builds the server (npm install + tsc)
-#   4. Builds the native onboarding app (swiftc)
-#   5. Launches the onboarding wizard
-#      → The wizard handles: daemon install, server install, pf firewall,
-#        MCP connection, skill install, and launches your first Claude session.
+#   3. Runs install-services.sh: build, block categories, pf firewall, daemon + server services
 
 set -euo pipefail
 
@@ -91,48 +87,5 @@ else
 fi
 cd "$INSTALL_DIR"
 
-# --- 5. Build server ---
-info "Installing dependencies..."
-npm install --silent 2>&1
-ok "Dependencies installed"
-
-info "Building server..."
-npx tsc 2>&1
-ok "Server built"
-
-# --- 6. Build onboarding app ---
-info "Building onboarding app..."
-cd "$INSTALL_DIR/app"
-make --quiet 2>&1
-ok "Onboarding app built"
-
-# --- 7. Install CLI symlink ---
-if [[ ! -L /usr/local/bin/amber-focus ]]; then
-    info "Installing amber-focus CLI to /usr/local/bin..."
-    if [[ -w /usr/local/bin ]]; then
-        ln -sf "$INSTALL_DIR/bin/amber-focus" /usr/local/bin/amber-focus
-        ok "CLI installed: amber-focus"
-    else
-        dim "Needs sudo for /usr/local/bin symlink"
-        sudo ln -sf "$INSTALL_DIR/bin/amber-focus" /usr/local/bin/amber-focus
-        ok "CLI installed: amber-focus"
-    fi
-else
-    ok "CLI already installed"
-fi
-
-# --- 8. Launch onboarding ---
-echo ""
-echo -e "${BOLD}${AMBER}Ready.${RESET}"
-echo ""
-echo "The onboarding wizard will now open. It will:"
-echo "  1. Ask what pulls you in (your triggers)"
-echo "  2. Let you choose block categories"
-echo "  3. Install the daemon, server, and firewall"
-echo "  4. Connect Claude Code and launch your first session"
-echo ""
-info "Launching onboarding wizard..."
-echo ""
-
-# Launch the GUI app — it handles everything from here
-"$INSTALL_DIR/app/amber-focus"
+# --- 5. Build and install the services ---
+exec "$INSTALL_DIR/install-services.sh" < /dev/tty

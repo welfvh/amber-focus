@@ -29,6 +29,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // src/daemon/index.ts
 var import_net = __toESM(require("net"), 1);
 var import_fs = __toESM(require("fs"), 1);
+var import_path = __toESM(require("path"), 1);
 
 // src/daemon/system.ts
 var import_child_process = require("child_process");
@@ -36,21 +37,21 @@ var import_util = require("util");
 var import_promises = __toESM(require("fs/promises"), 1);
 var execFileAsync = (0, import_util.promisify)(import_child_process.execFile);
 var MacOSSystem = class {
-  async readFile(path) {
-    return import_promises.default.readFile(path, "utf8");
+  async readFile(path2) {
+    return import_promises.default.readFile(path2, "utf8");
   }
-  async writeFile(path, content) {
-    await import_promises.default.writeFile(path, content);
+  async writeFile(path2, content) {
+    await import_promises.default.writeFile(path2, content);
   }
   /** Write-then-rename for crash safety. */
-  async writeFileAtomic(path, content) {
-    const tmp = path + ".tmp";
+  async writeFileAtomic(path2, content) {
+    const tmp = path2 + ".tmp";
     await import_promises.default.writeFile(tmp, content);
-    await import_promises.default.rename(tmp, path);
+    await import_promises.default.rename(tmp, path2);
   }
-  async fileExists(path) {
+  async fileExists(path2) {
     try {
-      await import_promises.default.access(path);
+      await import_promises.default.access(path2);
       return true;
     } catch {
       return false;
@@ -70,6 +71,16 @@ var MacOSSystem = class {
 };
 
 // src/shared/domains.ts
+function normalizeDomain(domain2) {
+  return domain2.toLowerCase().replace(/^www\./, "");
+}
+var LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+function isValidHostname(host) {
+  if (typeof host !== "string" || host.length === 0 || host.length > 253) return false;
+  const labels = host.split(".");
+  if (labels.length < 2 || !labels.every((l) => LABEL.test(l))) return false;
+  return !/^[0-9]+$/.test(labels[labels.length - 1]);
+}
 function collectAllDomainsWithVariants(domains) {
   const all = /* @__PURE__ */ new Set();
   for (const domain2 of domains) {
@@ -130,43 +141,6 @@ var PRIORITY_DOMAINS = [
   "betway.com",
   "williamhill.com"
 ];
-
-// src/daemon/hosts.ts
-var HOSTS_PATH = "/etc/hosts";
-var MARKER_START = "# BEGIN AMBER FOCUS BLOCK";
-var MARKER_END = "# END AMBER FOCUS BLOCK";
-var HostsManager = class {
-  constructor(sys2) {
-    this.sys = sys2;
-  }
-  /** Update /etc/hosts to block the given domains. Empty array = remove block. */
-  async update(domains, shieldActive) {
-    const allDomains = collectAllDomainsWithVariants(domains);
-    let content = await this.sys.readFile(HOSTS_PATH);
-    const startIdx = content.indexOf(MARKER_START);
-    const endIdx = content.indexOf(MARKER_END);
-    if (startIdx !== -1 && endIdx !== -1) {
-      content = content.slice(0, startIdx) + content.slice(endIdx + MARKER_END.length);
-    }
-    content = content.trimEnd() + "\n";
-    if (shieldActive && allDomains.length > 0) {
-      content += "\n" + MARKER_START + "\n";
-      content += `# Generated: ${(/* @__PURE__ */ new Date()).toISOString()}
-`;
-      content += `# Blocking ${allDomains.length} domains
-`;
-      for (const domain2 of allDomains) {
-        content += `0.0.0.0 ${domain2}
-`;
-        content += `:: ${domain2}
-`;
-      }
-      content += MARKER_END + "\n";
-    }
-    await this.sys.writeFileAtomic(HOSTS_PATH, content);
-    return allDomains.length;
-  }
-};
 
 // src/daemon/dns.ts
 var import_dns = __toESM(require("dns"), 1);
@@ -318,30 +292,9 @@ var PfManager = class {
       return ips;
     });
   }
-  /** Remove IP-level blocks for a specific domain (used on grant/unblock). */
-  async unblockDomain(domain2) {
-    await this.queue.enqueue(async () => {
-      try {
-        const rules = await this.sys.readFile(DYNAMIC_PF_PATH);
-        const lines = rules.split("\n").filter(
-          (line) => !line.includes(`# enforce:${domain2}`) && !line.includes(`# dynamic:${domain2}`) && !line.endsWith(`# ${domain2}`)
-          // legacy untagged rules
-        );
-        await this.sys.writeFile(DYNAMIC_PF_PATH, lines.join("\n") + "\n");
-        await this.reload();
-      } catch {
-      }
-    });
-  }
-  /** Kill existing TCP connections to a domain's resolved IPs. */
-  async killConnections(domain2) {
-    const ips = await resolveDomainWithVariants(domain2);
-    for (const ip of ips) {
-      await this.sys.execSilent("/sbin/pfctl", ["-k", "0.0.0.0/0", "-k", ip]);
-    }
-  }
+  /** Throws when pfctl cannot load the rules: the reconcile pass fails and retries. */
   async reload() {
-    await this.sys.execSilent("/sbin/pfctl", ["-f", PF_CONF_PATH]);
+    await this.sys.exec("/sbin/pfctl", ["-f", PF_CONF_PATH]);
   }
 };
 function generateStaticRules() {
@@ -415,118 +368,18 @@ block return out quick proto tcp to 208.75.76.0/22
 }
 
 // src/daemon/browser.ts
-var BROWSERS = ["Safari", "Arc", "Google Chrome"];
-function tabCloseScript(browser2, domain2) {
-  const safeDomain = domain2.replace(/"/g, '\\"');
-  return `tell application "${browser2}"
-  set windowList to every window
-  repeat with w in windowList
-    set tabList to every tab of w
-    repeat with t in tabList
-      if URL of t contains "${safeDomain}" then
-        close t
-      end if
-    end repeat
-  end repeat
-end tell`;
-}
 var CHROMIUM_NETWORK_PATTERNS = [
   "Google Chrome Helper.*network\\.mojom\\.NetworkService",
   "Arc Helper.*network\\.mojom\\.NetworkService"
 ];
-function sweepTabsScript(browser2, domains) {
-  const list = domains.map((d) => `"${d.replace(/"/g, '\\"').toLowerCase()}"`).join(", ");
-  return `tell application "${browser2}"
-    set blockedDomains to {${list}}
-    set closedCount to 0
-    try
-      repeat with w in every window
-        set tabsToClose to {}
-        repeat with t in (every tab of w)
-          try
-            set u to URL of t
-            -- Extract hostname: between "://" and next "/" (or end)
-            set host to ""
-            set schemeIdx to offset of "://" in u
-            if schemeIdx > 0 then
-              set rest to text (schemeIdx + 3) thru -1 of u
-              set slashIdx to offset of "/" in rest
-              if slashIdx > 0 then
-                set host to text 1 thru (slashIdx - 1) of rest
-              else
-                set host to rest
-              end if
-              -- Strip port if present
-              set colonIdx to offset of ":" in host
-              if colonIdx > 0 then
-                set host to text 1 thru (colonIdx - 1) of host
-              end if
-              -- AppleScript string comparison is case-insensitive by default,
-              -- so we match host vs lowercased domain list directly.
-              -- Match: host equals d OR host ends with "." & d
-              repeat with d in blockedDomains
-                set ds to d as text
-                if host is equal to ds then
-                  set end of tabsToClose to t
-                  exit repeat
-                else if host ends with ("." & ds) then
-                  set end of tabsToClose to t
-                  exit repeat
-                end if
-              end repeat
-            end if
-          end try
-        end repeat
-        repeat with t in tabsToClose
-          try
-            close t
-            set closedCount to closedCount + 1
-          end try
-        end repeat
-      end repeat
-    end try
-    return closedCount as text
-  end tell`;
-}
 var BrowserManager = class {
   constructor(sys2) {
     this.sys = sys2;
   }
-  /** Close tabs containing the domain across all supported browsers. */
-  async closeTabs(domain2) {
-    const results = await Promise.allSettled(
-      BROWSERS.map(
-        (browser2) => this.sys.execSilent("osascript", ["-e", tabCloseScript(browser2, domain2)])
-      )
-    );
-    return results.some((r) => r.status === "fulfilled" && r.value !== null);
-  }
-  /**
-   * Sweep all browsers and close any tab matching any of `domains`.
-   * One osascript call per browser. Designed for periodic invocation.
-   */
-  async sweepBlockedTabs(domains) {
-    if (domains.length === 0) return 0;
-    const results = await Promise.allSettled(
-      BROWSERS.map(
-        (browser2) => this.sys.execSilent("osascript", ["-e", sweepTabsScript(browser2, domains)])
-      )
-    );
-    let total = 0;
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value !== null) {
-        const n = parseInt(String(r.value).trim(), 10);
-        if (!isNaN(n)) total += n;
-      }
-    }
-    return total;
-  }
   /** Flush Chromium-based browser DNS caches by killing their network service processes. */
   async flushBrowserDnsCache() {
     const results = await Promise.allSettled(
-      CHROMIUM_NETWORK_PATTERNS.map(
-        (pattern) => this.sys.execSilent("/usr/bin/pkill", ["-f", pattern])
-      )
+      CHROMIUM_NETWORK_PATTERNS.map((pattern) => this.sys.execSilent("/usr/bin/pkill", ["-f", pattern]))
     );
     return results.some((r) => r.status === "fulfilled" && r.value !== null);
   }
@@ -1327,10 +1180,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path) {
-  if (!path)
+function getElementAtPath(obj, path2) {
+  if (!path2)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path2.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1713,11 +1566,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path, issues) {
+function prefixIssues(path2, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path);
+    iss.path.unshift(path2);
     return iss;
   });
 }
@@ -1900,7 +1753,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path = []) => {
+  const processError = (error49, path2 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -1910,7 +1763,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path, ...issue2.path];
+        const fullpath = [...path2, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1942,8 +1795,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path) {
+  const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path2) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -13920,13 +13773,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path = ref.slice(1).split("/").filter(Boolean);
-  if (path.length === 0) {
+  const path2 = ref.slice(1).split("/").filter(Boolean);
+  if (path2.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path[0] === defsKey) {
-    const key = path[1];
+  if (path2[0] === defsKey) {
+    const key = path2[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -14334,32 +14187,20 @@ var RPC_ERRORS = {
   INVALID_REQUEST: -32600,
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  // Application-specific
-  PF_FAILURE: -32e3,
-  HOSTS_FAILURE: -32001,
-  DNS_FAILURE: -32002
+  INTERNAL_ERROR: -32603
 };
-var DesiredStateSchema = external_exports.object({
-  blockedDomains: external_exports.array(external_exports.string()),
-  shieldActive: external_exports.boolean(),
-  priorityDomains: external_exports.array(external_exports.string()).optional()
-});
-var ApplyParamsSchema = external_exports.object({
-  state: DesiredStateSchema
-});
-var EnforceParamsSchema = external_exports.object({
-  domain: external_exports.string()
-});
-var UnblockDomainParamsSchema = external_exports.object({
-  domain: external_exports.string()
+var ReconcileParamsSchema = external_exports.object({
+  reason: external_exports.string().max(200).optional()
 });
 var FlushDnsParamsSchema = external_exports.object({}).optional();
 var StatusParamsSchema = external_exports.object({}).optional();
-var SweepBlockedTabsParamsSchema = external_exports.object({
-  domains: external_exports.array(external_exports.string())
-});
 var RestartParamsSchema = external_exports.object({}).optional();
+var DAEMON_METHODS = {
+  reconcile: ReconcileParamsSchema,
+  flush_dns: FlushDnsParamsSchema,
+  status: StatusParamsSchema,
+  restart: RestartParamsSchema
+};
 
 // src/daemon/rpc.ts
 var RpcDispatcher = class {
@@ -14392,19 +14233,11 @@ var RpcDispatcher = class {
     const params = request.params ?? {};
     const validationError = validateParams(request.method, params);
     if (validationError) {
-      return JSON.stringify(makeError(
-        request.id,
-        RPC_ERRORS.INVALID_PARAMS,
-        validationError
-      ));
+      return JSON.stringify(makeError(request.id, RPC_ERRORS.INVALID_PARAMS, validationError));
     }
     try {
       const result = await handler(params);
-      return JSON.stringify({
-        jsonrpc: "2.0",
-        id: request.id,
-        result
-      });
+      return JSON.stringify({ jsonrpc: "2.0", id: request.id, result });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return JSON.stringify(makeError(request.id, RPC_ERRORS.INTERNAL_ERROR, message));
@@ -14412,107 +14245,370 @@ var RpcDispatcher = class {
   }
 };
 function validateParams(method, params) {
+  const schema = DAEMON_METHODS[method];
+  if (!schema) return `Unknown method: ${method}`;
   try {
-    switch (method) {
-      case "apply":
-        ApplyParamsSchema.parse(params);
-        break;
-      case "enforce":
-        EnforceParamsSchema.parse(params);
-        break;
-      case "unblock_domain":
-        UnblockDomainParamsSchema.parse(params);
-        break;
-      case "sweep_blocked_tabs":
-        SweepBlockedTabsParamsSchema.parse(params);
-        break;
-      case "flush_dns":
-      case "status":
-      case "restart":
-        break;
-      default:
-        return `Unknown method: ${method}`;
-    }
+    schema.parse(params);
     return null;
   } catch (e) {
     return e instanceof Error ? e.message : "Invalid params";
   }
 }
 function makeError(id, code, message) {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+// src/shared/reconcile.ts
+var MARKER_START = "# BEGIN AMBER FOCUS BLOCK";
+var MARKER_END = "# END AMBER FOCUS BLOCK";
+var LEGACY_MARKER_START = "# BEGIN FOCUS SHIELD BLOCK";
+var LEGACY_MARKER_END = "# END FOCUS SHIELD BLOCK";
+var DOMAINS_LINE_PREFIX = "# Domains:";
+var DesiredConfigSchema = external_exports.object({
+  blockedDomains: external_exports.array(external_exports.string()).default([]),
+  allowances: external_exports.array(external_exports.object({ domain: external_exports.string(), expiresAt: external_exports.number() }).loose()).default([]),
+  shieldActive: external_exports.boolean().default(true)
+});
+function effectiveBlockedDomains(blocked, allowances, now) {
+  const allowed = activeAllowances(allowances, now);
+  const out = /* @__PURE__ */ new Set();
+  for (const raw of blocked) {
+    const domain2 = normalizeDomain(raw);
+    if (!isValidHostname(domain2)) continue;
+    const covered = allowed.some((a) => domain2 === a || domain2.endsWith("." + a));
+    if (!covered) out.add(domain2);
+  }
+  return [...out].sort();
+}
+function activeAllowances(allowances, now) {
+  return allowances.filter((a) => a.expiresAt > now).map((a) => normalizeDomain(a.domain)).filter(isValidHostname);
+}
+function invalidConfigDomains(cfg) {
+  const raw = [...cfg.blockedDomains, ...cfg.allowances.map((a) => a.domain)];
+  return raw.filter((d) => !isValidHostname(normalizeDomain(d)));
+}
+function desiredStateFromConfig(cfg, now) {
+  if (!cfg.shieldActive) return { shieldActive: false, blockedDomains: [] };
   return {
-    jsonrpc: "2.0",
-    id,
-    error: { code, message }
+    shieldActive: true,
+    blockedDomains: effectiveBlockedDomains(cfg.blockedDomains, cfg.allowances, now)
   };
+}
+function activeAllowanceDomains(cfg, now) {
+  return activeAllowances(cfg.allowances, now);
+}
+function renderHostsSection(state, generatedAt) {
+  const domains = state.shieldActive ? state.blockedDomains : [];
+  const variants = collectAllDomainsWithVariants(domains);
+  const lines = [
+    MARKER_START,
+    `# Generated: ${generatedAt}`,
+    `# Blocking ${variants.length} domains`,
+    DOMAINS_LINE_PREFIX + domains.map((d) => " " + d).join("")
+  ];
+  for (const host of variants) {
+    lines.push(`0.0.0.0 ${host}`);
+    lines.push(`:: ${host}`);
+  }
+  lines.push(MARKER_END);
+  return lines.join("\n") + "\n";
+}
+function findSpan(content, startMarker, endMarker) {
+  const start = content.indexOf(startMarker);
+  if (start === -1) return null;
+  const endMarkerIdx = content.indexOf(endMarker, start);
+  if (endMarkerIdx === -1) return null;
+  let end = endMarkerIdx + endMarker.length;
+  if (content[end] === "\n") end += 1;
+  return { start, end };
+}
+function extractManagedSection(content) {
+  const span = findSpan(content, MARKER_START, MARKER_END);
+  return span ? content.slice(span.start, span.end) : "";
+}
+function parseManagedDomains(content) {
+  const section = extractManagedSection(content);
+  if (!section) return null;
+  for (const line of section.split("\n")) {
+    if (line.startsWith(DOMAINS_LINE_PREFIX)) {
+      return line.slice(DOMAINS_LINE_PREFIX.length).split(/\s+/).filter(Boolean).sort();
+    }
+  }
+  return null;
+}
+function sectionEquivalent(a, b) {
+  const strip = (s) => s.split("\n").filter((line) => !line.startsWith("# Generated:")).join("\n");
+  return strip(a) === strip(b);
+}
+function replaceManagedSection(content, section) {
+  let out = content;
+  const span = findSpan(out, MARKER_START, MARKER_END);
+  if (span) out = out.slice(0, span.start) + out.slice(span.end);
+  out = out.trimEnd() + "\n";
+  if (section) out += "\n" + section;
+  return out;
+}
+function diffDomains(prev, next) {
+  const p = new Set(prev);
+  const n = new Set(next);
+  return {
+    added: [...n].filter((d) => !p.has(d)).sort(),
+    removed: [...p].filter((d) => !n.has(d)).sort()
+  };
+}
+var BLOCK_ADDRESSES = /* @__PURE__ */ new Set(["0.0.0.0", "::", "127.0.0.1", "::1"]);
+function buildHostsIndex(content) {
+  const managed = findSpan(content, MARKER_START, MARKER_END);
+  const legacy = findSpan(content, LEGACY_MARKER_START, LEGACY_MARKER_END);
+  const map2 = /* @__PURE__ */ new Map();
+  let offset = 0;
+  let lineEnd;
+  while (offset <= content.length) {
+    lineEnd = content.indexOf("\n", offset);
+    if (lineEnd === -1) lineEnd = content.length;
+    let line = content.slice(offset, lineEnd);
+    const hash2 = line.indexOf("#");
+    if (hash2 !== -1) line = line.slice(0, hash2);
+    const fields = line.trim().split(/\s+/);
+    if (fields.length > 1 && BLOCK_ADDRESSES.has(fields[0])) {
+      const inManaged = managed !== null && offset >= managed.start && offset < managed.end;
+      const inLegacy = legacy !== null && offset >= legacy.start && offset < legacy.end;
+      const source = inManaged ? "managed" : inLegacy ? "legacy" : "other";
+      for (let i = 1; i < fields.length; i++) {
+        const host = fields[i].toLowerCase();
+        const existing = map2.get(host);
+        if (existing === void 0 || existing === "managed" && source !== "managed") {
+          map2.set(host, source);
+        }
+      }
+    }
+    offset = lineEnd + 1;
+  }
+  return {
+    size: map2.size,
+    lookup(domain2) {
+      const base = normalizeDomain(domain2);
+      const a = map2.get(base) ?? null;
+      const b = map2.get("www." + base) ?? null;
+      if (a === null) return b;
+      if (b === null) return a;
+      return a === "managed" ? b : a;
+    }
+  };
+}
+
+// src/daemon/reconciler.ts
+var MAX_INDIVIDUAL_ENFORCE = 25;
+var BROWSER_DNS_SETTLE_MS = 500;
+var Reconciler = class {
+  configPath = null;
+  sys;
+  pf;
+  browser;
+  log;
+  hostsPath;
+  now;
+  sleep;
+  chain = Promise.resolve();
+  lastApplied = null;
+  /**
+   * The blocked domains in the hosts file before this daemon's first write: the
+   * diff base until a pass completes. Null when the file had no section this
+   * version can read; undefined until the first pass reads it.
+   */
+  bootDomains;
+  /** Index of the last hosts content seen; rebuilt only when the file changes. */
+  hostsIndex = null;
+  /** Invalid config entries last reported, so the log names each change once. */
+  lastInvalid = "";
+  status = {
+    configPath: null,
+    shieldActive: false,
+    domainsBlocked: 0,
+    lastReconcileAt: null,
+    lastChangeAt: null,
+    lastReason: null,
+    converged: false,
+    lastError: null,
+    legacyBlockedAllowed: []
+  };
+  constructor(deps) {
+    this.sys = deps.sys;
+    this.pf = deps.pf;
+    this.browser = deps.browser;
+    this.log = deps.log;
+    this.hostsPath = deps.hostsPath ?? "/etc/hosts";
+    this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  }
+  getStatus() {
+    return { ...this.status, configPath: this.configPath };
+  }
+  /** Run one pass. Passes are serialized; every caller gets a fresh pass. */
+  tick(reason) {
+    const run = this.chain.then(() => this.pass(reason));
+    this.chain = run.catch(() => void 0);
+    return run;
+  }
+  async pass(reason) {
+    const now = this.now();
+    try {
+      if (!this.configPath) throw new Error("config path unknown \u2014 no user logged in at the console");
+      const raw = await this.sys.readFile(this.configPath);
+      const parsed = DesiredConfigSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) throw new Error(`config.json invalid: ${parsed.error.message}`);
+      const cfg = parsed.data;
+      const invalid = invalidConfigDomains(cfg);
+      if (invalid.join(" ") !== this.lastInvalid) {
+        this.lastInvalid = invalid.join(" ");
+        if (invalid.length > 0) this.log(`ignoring ${invalid.length} invalid domain entries: ${JSON.stringify(invalid)}`);
+      }
+      const desired = desiredStateFromConfig(cfg, now);
+      const before = await this.sys.readFile(this.hostsPath);
+      const currentSection = extractManagedSection(before);
+      if (this.bootDomains === void 0) this.bootDomains = parseManagedDomains(before);
+      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : this.bootDomains;
+      const wantedSection = renderHostsSection(desired, new Date(now).toISOString());
+      const hostsChanged = !sectionEquivalent(currentSection, wantedSection);
+      if (hostsChanged) {
+        await this.sys.writeFileAtomic(this.hostsPath, replaceManagedSection(before, wantedSection));
+        await flushDnsCache(this.sys.exec.bind(this.sys), this.sys.execSilent.bind(this.sys));
+        this.log(`hosts updated (${reason}): ${desired.blockedDomains.length} domains, shield=${desired.shieldActive}`);
+      }
+      if (hostsChanged || !this.lastApplied || !sameState(this.lastApplied, desired)) {
+        await this.pf.updateStaticRules(desired.shieldActive);
+        await this.pf.refreshDynamicRules(desired.blockedDomains, desired.shieldActive);
+      }
+      const diff = prevDomains ? diffDomains(prevDomains, desired.blockedDomains) : { added: [], removed: [] };
+      if (diff.added.length > 0) {
+        if (diff.added.length <= MAX_INDIVIDUAL_ENFORCE) {
+          for (const domain2 of diff.added) {
+            const ips = await this.pf.blockDomain(domain2);
+            this.log(`enforced ${domain2} (${ips.length} IPs)`);
+          }
+        }
+        this.log(`newly blocked: ${diff.added.join(", ")}`);
+      }
+      if (diff.removed.length > 0) {
+        await this.browser.flushBrowserDnsCache();
+        await this.sleep(BROWSER_DNS_SETTLE_MS);
+        this.log(`newly allowed: ${diff.removed.join(", ")}`);
+      }
+      const after = hostsChanged ? await this.sys.readFile(this.hostsPath) : before;
+      const converged = sectionEquivalent(extractManagedSection(after), wantedSection);
+      const allowed = activeAllowanceDomains(cfg, now);
+      let legacyBlockedAllowed = [];
+      if (allowed.length > 0) {
+        if (!this.hostsIndex || this.hostsIndex.content !== after) {
+          this.hostsIndex = { content: after, index: buildHostsIndex(after) };
+        }
+        const index = this.hostsIndex.index;
+        legacyBlockedAllowed = allowed.filter((d) => index.lookup(d) === "legacy");
+      }
+      if (!converged) throw new Error("hosts verification failed after write");
+      this.lastApplied = desired;
+      this.status = {
+        configPath: this.configPath,
+        shieldActive: desired.shieldActive,
+        domainsBlocked: desired.blockedDomains.length,
+        lastReconcileAt: now,
+        lastChangeAt: hostsChanged ? now : this.status.lastChangeAt,
+        lastReason: reason,
+        converged: true,
+        lastError: null,
+        legacyBlockedAllowed
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log(`reconcile failed (${reason}): ${message}`);
+      this.status = {
+        ...this.status,
+        configPath: this.configPath,
+        lastReconcileAt: now,
+        lastReason: reason,
+        converged: false,
+        lastError: message
+      };
+    }
+    return this.getStatus();
+  }
+};
+function sameState(a, b) {
+  return a.shieldActive === b.shieldActive && a.blockedDomains.join(" ") === b.blockedDomains.join(" ");
 }
 
 // src/daemon/index.ts
 var SOCKET_PATH = "/tmp/amberfocus.sock";
+var TICK_INTERVAL_MS = 1e4;
+var CONFIG_POLL_MS = 1e3;
 var startTime = Date.now();
-var sys = new MacOSSystem();
-var queue = new OperationQueue();
-var hosts = new HostsManager(sys);
-var pf = new PfManager(sys, queue);
-var browser = new BrowserManager(sys);
-var rpc = new RpcDispatcher();
-var lastState = { blockedDomains: [], shieldActive: true };
 function log(msg) {
   console.log(`[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}`);
 }
-rpc.register("apply", async (params) => {
-  const { state } = params;
-  lastState = state;
-  log(`Applying state: ${state.blockedDomains.length} domains, shield=${state.shieldActive}`);
-  const domainsBlocked = await hosts.update(state.blockedDomains, state.shieldActive);
-  await pf.updateStaticRules(state.shieldActive);
-  await pf.refreshDynamicRules(state.blockedDomains, state.shieldActive);
-  await flushDnsCache(
-    sys.exec.bind(sys),
-    sys.execSilent.bind(sys)
-  );
-  log(`State applied: ${domainsBlocked} domain variants in hosts, pf updated`);
-  return { hostsUpdated: true, pfUpdated: true, domainsBlocked };
-});
-rpc.register("enforce", async (params) => {
-  const { domain: domain2 } = params;
-  log(`Enforcing block: ${domain2}`);
-  const ips = await pf.blockDomain(domain2.toLowerCase());
-  await pf.killConnections(domain2.toLowerCase());
-  const tabsClosed = await browser.closeTabs(domain2.toLowerCase());
-  await flushDnsCache(sys.exec.bind(sys), sys.execSilent.bind(sys));
-  log(`Block enforced: ${domain2} (${ips.length} IPs, tabs closed: ${tabsClosed})`);
-  return { ipsBlocked: ips, connectionsKilled: true, tabsClosed };
-});
-rpc.register("unblock_domain", async (params) => {
-  const { domain: domain2 } = params;
-  log(`Unblocking domain: ${domain2}`);
-  await pf.unblockDomain(domain2.toLowerCase());
-  const tabsClosed = await browser.closeTabs(domain2.toLowerCase());
-  const browserDnsFlushed = await browser.flushBrowserDnsCache();
-  log(`Domain unblocked: ${domain2} (pf rules removed, tabs closed: ${tabsClosed}, browser DNS flushed: ${browserDnsFlushed})`);
-  return { pfRulesRemoved: true, tabsClosed };
-});
-rpc.register("sweep_blocked_tabs", async (params) => {
-  const { domains } = params;
-  const closedCount = await browser.sweepBlockedTabs(domains.map((d) => d.toLowerCase()));
-  if (closedCount > 0) {
-    log(`Tab sweep closed ${closedCount} tab(s) matching blocklist`);
+var sys = new MacOSSystem();
+var queue = new OperationQueue();
+var pf = new PfManager(sys, queue);
+var browser = new BrowserManager(sys);
+var rpc = new RpcDispatcher();
+var reconciler = new Reconciler({ sys, pf, browser, log });
+function argConfigPath() {
+  const idx = process.argv.indexOf("--config");
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null;
+}
+async function consoleUserConfigPath() {
+  const uid = import_fs.default.statSync("/dev/console").uid;
+  if (uid === 0) return null;
+  const out = await sys.execSilent("/usr/bin/dscacheutil", ["-q", "user", "-a", "uid", String(uid)]);
+  const home = out?.stdout.match(/^dir: (\/.+)$/m)?.[1];
+  return home ? import_path.default.join(home, ".config", "amber-focus", "config.json") : null;
+}
+var watched = null;
+function watchConfig(p) {
+  if (watched === p) return;
+  if (watched) import_fs.default.unwatchFile(watched);
+  watched = p;
+  import_fs.default.watchFile(p, { interval: CONFIG_POLL_MS }, (curr, prev) => {
+    if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) {
+      void reconciler.tick("config-change");
+    }
+  });
+}
+function setConfigPath(p, source) {
+  const resolved = import_path.default.resolve(p);
+  if (reconciler.configPath === resolved) return;
+  reconciler.configPath = resolved;
+  watchConfig(resolved);
+  log(`config path set from ${source}: ${resolved}`);
+}
+async function ensureConfigPath() {
+  if (reconciler.configPath) return;
+  const fromArg = argConfigPath();
+  if (fromArg) return setConfigPath(fromArg, "--config");
+  if (process.env.AMBER_FOCUS_CONFIG) return setConfigPath(process.env.AMBER_FOCUS_CONFIG, "env");
+  const fromConsole = await consoleUserConfigPath();
+  if (fromConsole) setConfigPath(fromConsole, "console user");
+}
+async function tick(reason) {
+  try {
+    await ensureConfigPath();
+  } catch (err) {
+    log(`config path lookup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return { closedCount };
+  return reconciler.tick(reason);
+}
+function daemonStatus() {
+  return { running: true, pid: process.pid, uptime: Date.now() - startTime, ...reconciler.getStatus() };
+}
+rpc.register("reconcile", async (params) => {
+  const { reason } = params;
+  await tick(reason ?? "request");
+  return daemonStatus();
 });
+rpc.register("status", async () => daemonStatus());
 rpc.register("flush_dns", async () => {
   await flushDnsCache(sys.exec.bind(sys), sys.execSilent.bind(sys));
   log("DNS cache flushed");
   return { flushed: true };
-});
-rpc.register("status", async () => {
-  return {
-    running: true,
-    pid: process.pid,
-    shieldActive: lastState.shieldActive,
-    domainsBlocked: lastState.blockedDomains.length,
-    uptime: Date.now() - startTime
-  };
 });
 rpc.register("restart", async () => {
   log("Self-restart requested \u2014 exiting after 200ms; launchd will respawn");
@@ -14545,6 +14641,14 @@ server.listen(SOCKET_PATH, () => {
   import_fs.default.chmodSync(SOCKET_PATH, 438);
   log(`Daemon listening on ${SOCKET_PATH}`);
   log(`PID: ${process.pid}`);
+});
+void tick("boot");
+setInterval(() => void tick("timer"), TICK_INTERVAL_MS);
+process.on("unhandledRejection", (err) => {
+  log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+});
+process.on("uncaughtException", (err) => {
+  log(`uncaught exception: ${err.stack ?? err.message}`);
 });
 function shutdown() {
   log("Shutting down...");

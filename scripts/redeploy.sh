@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild + restart server + restart daemon. Always works.
+# Rebuild + restart daemon, then server. Always works.
 #
 # Steady state: `restart` RPC over the Unix socket → daemon self-exits →
 # launchd KeepAlive respawns from the latest bundle. No sudo.
@@ -86,14 +86,14 @@ wait_for_new_pid() {
 echo "==> build"
 npm run build
 
-echo "==> restart server (user LaunchAgent, no sudo)"
-launchctl kickstart -k "gui/$(id -u)/com.amberfocus.server" 2>/dev/null || true
-
 # --- Wait for socket; if absent, daemon isn't running → bootstrap with sudo. ---
 if ! wait_for_socket; then
-  echo "==> daemon socket missing — running one-time sudo kickstart"
-  sudo launchctl kickstart -k system/com.amberfocus.daemon
-  wait_for_socket || { echo "ERROR: daemon never came up after sudo kickstart"; exit 1; }
+  echo "==> daemon socket missing — running one-time sudo enable + bootstrap/kickstart"
+  # A reboot with a stale "disabled" flag leaves the daemon unloaded; enable is idempotent.
+  sudo launchctl enable system/com.amberfocus.daemon
+  sudo launchctl bootstrap system /Library/LaunchDaemons/com.amberfocus.daemon.plist 2>/dev/null \
+    || sudo launchctl kickstart -k system/com.amberfocus.daemon
+  wait_for_socket || { echo "ERROR: daemon never came up after sudo bootstrap"; exit 1; }
 fi
 
 OLD_PID="$(get_pid)"
@@ -108,6 +108,7 @@ RESTART_REPLY="$(send_restart)"
 # --- Detect a daemon that predates the `restart` RPC and fall back to sudo. ---
 if [[ "$RESTART_REPLY" == *'"Method not found"'* || "$RESTART_REPLY" == *"-32601"* ]]; then
   echo "==> running daemon predates restart RPC — one-time sudo kickstart to load new code"
+  sudo launchctl enable system/com.amberfocus.daemon
   sudo launchctl kickstart -k system/com.amberfocus.daemon
   wait_for_socket || { echo "ERROR: daemon never came up after sudo kickstart"; exit 1; }
   NEW_PID="$(get_pid)"
@@ -116,17 +117,24 @@ if [[ "$RESTART_REPLY" == *'"Method not found"'* || "$RESTART_REPLY" == *"-32601
     exit 1
   fi
   echo "==> daemon back up (pid $NEW_PID, was $OLD_PID) via sudo bootstrap"
-  exit 0
-fi
-
-if [[ "$RESTART_REPLY" != *'"scheduled":true'* ]]; then
+elif [[ "$RESTART_REPLY" != *'"scheduled":true'* ]]; then
   echo "ERROR: unexpected restart reply: $RESTART_REPLY"
   exit 1
+else
+  echo "==> waiting for daemon to come back (was pid $OLD_PID)"
+  NEW_PID="$(wait_for_new_pid "$OLD_PID")" || {
+    echo "ERROR: daemon did not respawn within 10s. Check: launchctl print system/com.amberfocus.daemon"
+    exit 1
+  }
+  echo "==> daemon back up (pid $NEW_PID, was $OLD_PID)"
 fi
 
-echo "==> waiting for daemon to come back (was pid $OLD_PID)"
-NEW_PID="$(wait_for_new_pid "$OLD_PID")" || {
-  echo "ERROR: daemon did not respawn within 10s. Check: launchctl print system/com.amberfocus.daemon"
-  exit 1
-}
-echo "==> daemon back up (pid $NEW_PID, was $OLD_PID)"
+# The server restarts after the daemon, so its boot pass reaches the new daemon.
+echo "==> restart server (user LaunchAgent, no sudo)"
+launchctl kickstart -k "gui/$(id -u)/com.amberfocus.server" 2>/dev/null || true
+for _ in {1..40}; do curl -s -m1 -o /dev/null localhost:8053/status && break; sleep 0.25; done
+
+# Ask the fresh daemon for a pass now, then print the health line that matters.
+sleep 1
+curl -s -m45 -X POST localhost:8053/api/reconcile >/dev/null 2>&1 || true
+curl -s -m5 localhost:8053/status | python3 -c 'import sys,json; d=json.load(sys.stdin); print("==> healthy=%s converged=%s shield=%s error=%s" % (d.get("healthy"), d.get("converged"), d.get("shieldActive"), d.get("lastError")))' || echo "==> server status unavailable"

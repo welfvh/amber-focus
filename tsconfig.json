@@ -11,6 +11,14 @@
     "declaration": false,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "out", "dist", "src/main", "src/daemon/**"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "out",
+    "dist",
+    "src/main",
+    "src/**/*.test.ts"
+  ]
 }

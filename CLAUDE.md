@@ -1,250 +1,183 @@
 # amber-focus
 
-Multi-layer macOS distraction blocker. The **server** (user-space, port 8053) owns all
-application state. The **daemon** (root, Unix socket) applies that state to the OS.
-Stateless daemon design -- if the daemon restarts, the server re-sends the desired state
-and nothing is lost. An optional **MITM proxy** (port 8080) adds path-level blocking
-and progressive delay friction.
+Multi-layer macOS distraction blocker. The **server** (user-space, `127.0.0.1:8053`) edits
+the desired state in `config.json`. The **daemon** (root, Unix socket) owns convergence: it
+reads `config.json` itself and reconciles `/etc/hosts` and pf to it every 10 s, on every
+file change, and on request. Grants and expiries therefore apply even when the server is
+down. The server asks for a pass after each change and reports OS truth (read from
+`/etc/hosts`), never its own store alone.
 
-The blocker operates on **three layers** that together close all known DNS-bypass gaps
-(browser DoH, internal DNS caches, IP-cache resurfacing):
+Three layers:
 
-1. **Network layer** — `/etc/hosts` rewrite + pf firewall + DNS flush. Blocks at the OS resolver.
-2. **Tab layer** — periodic browser tab sweep (every 10s). Closes any open tab whose URL matches the blocklist, even when the tab loaded via DoH.
-3. **App layer** — retreat mode: Swift `NSWorkspace` launch observer + 5s sweep. Allowlist mode kills any app not allowlisted; blocklist mode (when `retreat.blocklist` is non-empty) kills only the listed bundle IDs. Active during scheduled windows.
+1. **Network** — `/etc/hosts` managed section + pf firewall + DNS flush (daemon, root).
+2. **Tabs** — every 10 s the server closes any open tab on an effectively blocked domain,
+   even one that loaded via DoH or a cached IP. It reloads a granted domain's tabs, and
+   closes them again on revoke or expiry (server, as the user, via JXA).
+3. **Apps** — retreat mode: the Swift `retreat-enforcer` asks apps outside an allowlist to
+   quit during scheduled windows. It never force-quits, so no unsaved work is lost.
 
 ## Architecture
 
 ```
-Claude ──MCP──> Server (:8053) ──JSON-RPC──> Daemon (root)
-                  │                              │
-                store.ts                    /etc/hosts
-               (config.json)                pf firewall
-                  │                         DNS cache flush
-                REST API                    browser tab close
-                  │                         connection kill (pfctl -k)
-              [Proxy :8080]                 tab sweep (every 10s)
-             (optional MITM)
-                  │
-                  └─reads─> retreat-enforcer (user LaunchAgent)
-                            NSWorkspace observer + 5s app sweep
-                            → politely quit non-allowlisted apps
+focus-grant / curl ──> Server (:8053, user) ──"reconcile now"──> Daemon (root)
+                         │                                         │ 10 s timer, file watch, RPC
+                       store.ts ──writes──> config.json ──reads──────┤
+                         │                      │                  ├─ /etc/hosts managed section
+                       browser.ts (JXA)         │                  ├─ pf (static + dynamic anchors)
+                       tab sweep, reload,       │                  ├─ DNS flush, Chromium DNS flush
+                       vigilant tab reads       │                  └─ newly blocked: pf enforce + kill
+                                                └─reads─> retreat-enforcer (user LaunchAgent)
 ```
+
+**Trust boundary.** The daemon runs as root and trusts nothing it reads: config entries
+that are not plain hostnames (`isValidHostname`) never reach `/etc/hosts` or pf, and an
+invalid allowance opens nothing. It finds `config.json` itself (`--config`,
+`AMBER_FOCUS_CONFIG`, or the console user's `~/.config/amber-focus/config.json`); no RPC
+can change that path. Root never drives a browser.
+
+**Local clients only.** The server binds to `127.0.0.1`, refuses any `Host` other than the
+loopback address (DNS rebinding), and refuses every request that carries an `Origin`
+header — so no web page can call it. There is no CORS, no MCP endpoint and no tunnel.
+
+**Desired state → reconcile.** Every mutation only edits `config.json`, then asks the
+daemon for a pass. The pass is idempotent: it renders the managed hosts section (also when
+nothing is blocked), writes it only when it differs, refreshes pf on change, and derives
+side effects from the diff between the last complete pass and the new state. After a
+daemon restart, the base is the section's `# Domains:` line. A pass that fails partway
+keeps the old base, so the next pass retries pf and the side effects. If `config.json` is
+unreadable, the pass stops and the OS keeps its blocks (fail closed); `lastError` says why.
+
+**Truth, not intent.** `GET /api/check/:domain` returns `blocked` (what `/etc/hosts`
+enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlocked`.
+`focus-grant` verifies against `blocked`.
 
 ## Key Files
 
 | Path | Responsibility |
 |------|----------------|
-| `src/server.ts` | Express HTTP on 127.0.0.1:8053. REST API, MCP mount, allowance expiry loop (30s), tab sweep loop (10s) |
-| `app/retreat-enforcer.swift` | User-space Swift binary. NSWorkspace launch observer + 5s sweep. Reads `retreat` config from `config.json` directly; kills non-allowlisted apps when current time falls inside a configured window and `endDate` hasn't passed |
-| `src/store.ts` | All persistent state: blocked domains, allowances, delays, hard lockouts, categories. Reads/writes `~/.config/amber-focus/config.json` |
-| `src/mcp.ts` | MCP server (Streamable HTTP transport, session management). 8 tools for Claude. Bearer token auth |
-| `src/daemon-client.ts` | Typed JSON-RPC 2.0 client over Unix socket. Server uses this to command the daemon |
-| `src/vigilant.ts` | Vigilant mode: screenshot capture, Anthropic API evaluation, auto-revoke on drift |
-| `src/proxy.ts` | Optional MITM HTTPS proxy for path-level blocking and delay friction |
-| `src/daemon/index.ts` | Daemon entry: registers RPC handlers, listens on Unix socket, graceful shutdown |
-| `src/daemon/hosts.ts` | /etc/hosts management with marker comments, atomic writes |
-| `src/daemon/pf.ts` | pf firewall: static anchor (hardcoded IP ranges) + dynamic anchor (resolved IPs) |
-| `src/daemon/browser.ts` | Close browser tabs matching a domain via JXA/AppleScript (Safari, Arc, Chrome) |
-| `src/daemon/dns.ts` | DNS resolution via `dns.Resolver` (8.8.8.8) + system DNS cache flush |
-| `src/daemon/queue.ts` | Serial async queue to prevent concurrent pfctl calls |
-| `src/daemon/rpc.ts` | JSON-RPC 2.0 dispatcher with Zod schema validation |
-| `src/daemon/system.ts` | Shell exec wrappers (`SystemOperations` interface) for privileged ops |
-| `src/shared/ipc-types.ts` | JSON-RPC type definitions and Zod schemas for all daemon methods |
-| `src/shared/domains.ts` | Domain normalization, matching, www/subdomain variant expansion |
-| `install.sh` | Interactive installer: npm build, category selection, LaunchDaemon + LaunchAgent |
-| `uninstall.sh` | Remove services, hosts entries, pf rules. Preserves config by default |
-| `enable-pf.sh` | Enable IP-level blocking via pf for Twitter/X, Meta, TikTok, Netflix |
+| `src/server.ts` | REST API, expiry loop (30 s), daemon watchdog (30 s), tab sweep (10 s). Never dies on daemon errors |
+| `src/guard.ts` | Request guard: loopback `Host` only, no `Origin` |
+| `src/policy.ts` | Input policy: `parseDomain` (hostname at or below a registrable domain, via `tldts`), grant minutes (1–60), text fields |
+| `src/actions.ts` | `grant` / `revoke` (the one path for both), `unblock`, `applyDesiredState`, OS truth (`osBlockState`, `describeDomain`), vigilant hooks |
+| `src/browser.ts` | List, close, reload tabs in Chrome, Safari, Arc via JXA. Data goes in as a JSON argument, never into script source |
+| `src/notify.ts` | macOS notification banner (JXA, arguments only) |
+| `src/store.ts` | `config.json`: `shieldActive`, blocklist, allowances, hard lockouts, retreat. Atomic writes; a failed write throws and changes nothing; unknown keys kept; a missing file gets the defaults; a corrupt file is copied aside before defaults load; an unreadable file is never overwritten |
+| `src/vigilant.ts` | Vigilant mode (see below) |
+| `src/daemon-client.ts` | JSON-RPC client: `reconcile`, `status`, `flush_dns`, `restart`. Returns null when the daemon is unreachable |
+| `src/daemon/index.ts` | Daemon entry: config path discovery, reconcile loop, RPC handlers |
+| `src/daemon/reconciler.ts` | The convergence pass. Serialized; every caller gets a fresh pass |
+| `src/shared/reconcile.ts` | Pure core: effective blocklist, hosts section render/parse/diff, hosts truth index |
+| `src/shared/domains.ts` | `isValidHostname`, normalization, matching, variant expansion |
+| `src/daemon/pf.ts` | pf anchors: static IP ranges + resolved IPs of priority domains |
+| `src/daemon/browser.ts` | Chromium DNS cache flush (kills the network service; the browser respawns it) |
+| `app/retreat-enforcer.swift` | Retreat mode app enforcer (user LaunchAgent) |
+| `skill/amber-focus.md` | The `/amber-focus` Claude Code skill. `install-services.sh` links it into `~/.claude/commands/` |
+| `bin/focus-grant` | The one command for timed grants: expand brand → TLDs, grant, verify OS truth, open the site |
+| `install.sh` | One-line installer: prerequisites, clone, then `install-services.sh` |
+| `install-services.sh` | Build, choose categories (first install), enable pf, install daemon + server services |
 
-## MCP Tools
+## API
 
-Defined in `src/mcp.ts`. Endpoint: `/mcp` on port 8053. Auth: Bearer token from `~/.config/amber-focus/mcp-token` (header or `?token=` query param).
-
-| Tool | Description |
-|------|-------------|
-| `amber_status` | Shield active state, daemon health, blocked count, active allowances, hard lockouts |
-| `amber_blocked_list` | List all domains on the blocklist |
-| `amber_check_domain` | Check if a domain is blocked, has an allowance, or is hard-locked |
-| `amber_allowances` | List all active time-limited access grants with expiry times |
-| `amber_delayed_list` | List domains with delay friction (progressive wait times) |
-| `amber_grant` | Grant time-limited access (1-30 min, auto-expires). Optional vigilant mode. Refuses hard-locked domains |
-| `amber_block` | Add domain to blocklist. Immediately enforces via DNS + pf + connection kill + tab close |
-| `amber_unblock` | Permanently remove domain from blocklist. Refuses hard-locked domains |
-| `amber_vigilant_status` | Check current vigilant monitoring session, evaluation counts, and recent log |
-
-The `amber_grant` tool description includes behavioral instructions for Claude (challenge the user, ask for specific intent before granting). See `mcp.ts` for full prompt text.
-
-## API Endpoints
-
-All on `http://127.0.0.1:8053`. No auth for local access.
+All on `http://127.0.0.1:8053`, local non-browser clients only (see above).
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/status` | Shield state, daemon health, blocked count, allowances |
-| GET | `/api/filter-state` | Full blocked domain list + version counter (for NE extension polling) |
-| GET | `/api/blocked` | List all blocked domains |
-| POST | `/api/block` | Add domain. Body: `{"domain": "..."}` |
-| DELETE | `/api/block/:domain` | Remove domain. Refuses hard-locked |
-| GET | `/api/check/:domain` | Check blocked status + allowance remaining |
-| POST | `/api/grant` | Grant timed access. Body: `{"domain","minutes","reason","vigilant?","intent?"}` |
-| DELETE | `/api/grant/:domain` | Revoke allowance immediately (aggressive re-block) |
-| GET | `/api/allowances` | List active allowances |
-| POST | `/api/shield/enable` | Enable shield (apply all blocking) |
-| POST | `/api/shield/disable` | Disable shield (remove all blocking) |
-| GET | `/api/delayed` | List delayed domains |
-| POST | `/api/delay` | Add to delay list. Body: `{"domain": "..."}` |
-| DELETE | `/api/delay/:domain` | Remove from delay list |
-| GET | `/api/check-delay/:domain` | Delay status and current wait time |
-| POST | `/api/delay-complete` | Record delay wait completed. Body: `{"domain": "..."}` |
-| GET | `/api/paths` | List blocked paths |
-| POST | `/api/path` | Add blocked path. Body: `{"domain","path"}` |
-| DELETE | `/api/path` | Remove blocked path. Body: `{"domain","path"}` |
-| GET | `/api/locks` | List active hard lockouts |
-| POST | `/api/lock` | Add hard lockout. Body: `{"domain","until"}` (ISO date) |
-| DELETE | `/api/lock/:domain` | Remove hard lockout |
-| GET | `/api/retreat` | Get retreat config (windows, allowlist, endDate, enabled) |
-| POST | `/api/retreat` | Enable retreat. Body: `{"endDate":"YYYY-MM-DD","windows":[{"start":960,"end":1080}],"allowlist":["bundle.id"]}`. `start`/`end` are minutes from midnight; if `end < start`, window wraps midnight |
-| DELETE | `/api/retreat` | Disable retreat (allowlist preserved) |
-| POST | `/api/flush-dns` | Flush system DNS cache via daemon |
-| GET | `/api/proxy/ca` | CA cert path for proxy setup |
-| GET | `/api/vigilant/status` | Current vigilant monitoring session status |
-| GET | `/api/vigilant/log` | Recent vigilant evaluations (query: `?count=N`) |
+| GET | `/status` | Shield, daemon truth (`daemonRunning`, `converged`, `healthy`, `lastError`, `legacyBlockedAllowed`), allowances, vigilant and tab-sweep health |
+| GET | `/api/blocked` | Blocklist |
+| POST | `/api/block` | Add a domain. Body `{"domain"}`. Closes its tabs |
+| DELETE | `/api/block/:domain` | Remove a domain. Refused while a hard lock touches it (the domain, a parent, or a locked subdomain) |
+| GET | `/api/check/:domain` | `blocked` (OS truth) + `source`, `desiredBlocked`, `onBlocklist`, `allowanceMinutes`, `locked` |
+| POST | `/api/grant` | Timed access. Body `{"domain","minutes"(1–60),"reason","vigilant?","intent?"}`. Refuses public suffixes and anything a hard lock touches (the domain, a parent, or a locked subdomain) |
+| DELETE | `/api/grant/:domain` | End a grant now; closes its tabs |
+| GET | `/api/allowances` | Active grants |
+| POST | `/api/shield/enable` | Shield on |
+| POST | `/api/shield/disable` | Shield off. Refused while any hard lock is active |
+| POST | `/api/reconcile` | One reconcile pass now. 503 when the daemon is unreachable |
+| GET/POST/DELETE | `/api/retreat` | Retreat config. POST body `{"endDate":"YYYY-MM-DD","windows":[{"start":960,"end":1080}],"allowlist":["bundle.id"],"blocklist"?:[...]}` (minutes from midnight; `end < start` wraps midnight). POST replaces the whole config |
+| POST | `/api/flush-dns` | Flush the system DNS cache via the daemon |
+| GET | `/api/vigilant/status`, `/api/vigilant/log?count=N` | Vigilant sessions and evaluations |
+| GET | `/api/locks` | Active hard lockouts |
+| POST | `/api/lock` | Add or extend a hard lockout. Body `{"domain","until"}` (future ISO date). A lock only grows: the response gives the `until` that holds. There is no remove endpoint: a lock holds until it expires |
 
-## How Blocking Works
+## Grants
 
-**Block:** domain added to store -> server sends `apply` RPC with full state -> daemon writes /etc/hosts entries (0.0.0.0 for domain + www + mobile variants), updates pf rules (static IP ranges + dynamic resolved IPs), flushes DNS cache. For immediate enforcement: `enforce` RPC also kills TCP connections (`pfctl -k`) and closes browser tabs (AppleScript).
+A grant stores an allowance, asks the daemon for a pass (which drops the domain from hosts
+and pf and flushes the Chromium DNS cache), then reloads the domain's tabs. **Expiry**
+needs no server: the daemon's own pass sees `expiresAt` in the past and re-blocks. The
+server's 30 s loop prunes the allowance, stops vigilant monitoring, and closes the tabs.
 
-**Grant (timed access):** server checks hard lockouts (refuses if locked) -> creates allowance with expiry -> computes "effectively blocked" = blocklist minus active allowances -> sends `unblock_domain` RPC (daemon removes pf rules, closes stale tabs) -> re-applies blocking with domain excluded. Expiry checker runs every 30s; on expiry: full re-block + aggressive enforce.
+Policy lives in two places: the code enforces hard limits (1–60 min, valid sites, hard
+locks, shield-off refused under a lock). When to grant at all is the agent's judgment, in
+the `/amber-focus` skill and the cc-focus rules of the global CLAUDE.md.
 
-**Hard lockout:** immutable until date. `DELETE /api/block/:domain`, `POST /api/grant`, and `amber_unblock` all refuse. Currently active: Twitter/X + YouTube locked until March 1, 2026.
+## Daemon IPC
 
-**Tab sweep (closes the DoH gap):** every 10 seconds the server calls `sweep_blocked_tabs` with the current effective blocklist. The daemon runs one AppleScript per browser (Safari, Arc, Chrome) that walks every window/tab and closes any whose URL contains a blocked domain. This catches tabs that loaded via DNS-over-HTTPS or otherwise bypassed `/etc/hosts` — when a Chromium browser cached a real IP for instagram.com, the tab still gets closed by URL match.
-
-**Retreat mode (Mac app allowlist):** an opt-in mode for periods of strict focus (retreats, deep work blocks). Configured via `POST /api/retreat` with windows (minutes from midnight), an `endDate`, and an allowlist of bundle IDs. The Swift `retreat-enforcer` LaunchAgent reads `retreat` from `config.json` directly and, while the current time falls inside any window AND `now < endDate`:
-1. **Launch observer** — `NSWorkspace.didLaunchApplicationNotification` triggers an instant kill on app launch.
-2. **5s sweep** — catches apps already running when a window opens.
-3. **System allowlist** — Finder, Dock, ControlCenter, NotificationCenter, SystemUIServer, WindowManager, SystemPreferences are hardcoded as always-allowed so the OS stays usable.
-4. **Scoped to `.regular`** — only kills dock-able UI apps; menu bar utilities and background services are unaffected.
-
-The `endDate` is a hard expiry — once passed, the enforcer stops killing even if the LaunchAgent is still running.
-
-## Daemon IPC Protocol
-
-JSON-RPC 2.0 over Unix socket at `/tmp/amberfocus.sock`. Newline-delimited. 15s timeout.
+JSON-RPC 2.0 over `/tmp/amberfocus.sock` (mode 0666), newline-delimited. 15 s timeout
+(45 s for `reconcile`).
 
 | Method | Params | Effect |
 |--------|--------|--------|
-| `apply` | `{state: {blockedDomains, shieldActive}}` | Full state sync: /etc/hosts + pf rules + DNS flush |
-| `enforce` | `{domain}` | Aggressive block: resolve IPs, pf rules, kill connections, close tabs |
-| `unblock_domain` | `{domain}` | Remove pf rules for domain + close stale tabs |
-| `sweep_blocked_tabs` | `{domains: string[]}` | Walk every browser tab, close any whose URL matches any domain. Called every 10s by the server's tab sweep loop. Returns `{closedCount}` |
-| `flush_dns` | (none) | Flush macOS DNS cache |
-| `status` | (none) | Daemon health: pid, uptime, shield state, domain count |
+| `reconcile` | `{reason?}` | Run one pass, return the daemon status |
+| `status` | — | pid, uptime, `converged`, `lastReconcileAt`, `lastError`, `configPath`, `legacyBlockedAllowed` |
+| `flush_dns` | — | Flush the macOS DNS cache |
+| `restart` | — | Self-exit; launchd respawns from the bundle on disk (sudo-free redeploy) |
 
-When adding a new RPC method, register a Zod params schema in `src/shared/ipc-types.ts`, add a `case` in `validateParams` (`src/daemon/rpc.ts`), and register the handler in `src/daemon/index.ts`. **All three are required** — the dispatcher's switch otherwise rejects the method with `Unknown method` even when the handler is registered.
+New RPC methods: add the Zod params schema to `DAEMON_METHODS` in
+`src/shared/ipc-types.ts` and register the handler in `src/daemon/index.ts`.
 
-## How to Debug
+## Debug
 
 ```bash
-# -- Server health --
-curl localhost:8053/status
-curl localhost:8053/api/check/twitter.com
-curl localhost:8053/api/allowances
-curl localhost:8053/api/locks
-
-# -- Daemon health --
-ls -la /tmp/amberfocus.sock
-sudo launchctl list | grep amberfocus
+curl -s localhost:8053/status | jq
+curl -s localhost:8053/api/check/youtube.com | jq
+tail -f ~/.config/amber-focus/server.log          # timestamped
 sudo tail -f /var/log/amber-focus-daemon.log
-
-# -- Server process --
-launchctl list | grep amberfocus
-tail -f ~/.config/amber-focus/server.log
-
-# -- pf rules --
-sudo pfctl -a com.welf.amberfocus -sr           # static anchor
-sudo pfctl -a com.welf.amberfocus.dynamic -sr   # dynamic anchor
-
-# -- Test a grant --
-curl -X POST localhost:8053/api/grant \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"reddit.com","minutes":5,"reason":"test"}'
-
-# -- Flush DNS --
-curl -X POST localhost:8053/api/flush-dns
-
-# -- Tab sweep status --
-tail -f /var/log/amber-focus-daemon.log | grep "Tab sweep"
-# Force one immediate sweep (also triggered every 10s automatically):
-echo '{"jsonrpc":"2.0","id":1,"method":"sweep_blocked_tabs","params":{"domains":["instagram.com"]}}' | nc -U /tmp/amberfocus.sock
-
-# -- Retreat mode --
-curl localhost:8053/api/retreat                                    # current config
-launchctl print gui/$(id -u)/com.amberfocus.retreat-enforcer       # enforcer status
-tail -f ~/.config/amber-focus/retreat-enforcer.log                 # kill log
-
-# -- Manual start (dev) --
-# Terminal 1: sudo node daemon/daemon.cjs
-# Terminal 2: npm start  (or: npx tsx src/server.ts)
+sudo pfctl -a com.welf.amberfocus -sr; sudo pfctl -a com.welf.amberfocus.dynamic -sr
+launchctl print gui/$(id -u)/com.amberfocus.retreat-enforcer
+npm test                                          # vitest
+npm run redeploy                                  # build, restart server + daemon (no sudo)
 ```
 
-## Known Issues and Gotchas
+## Known Issues
 
-- **Browser DNS cache lag on unblock**: browsers cache DNS internally, ignore system flushes. Mitigated by pf rule removal (instant) + stale tab closing + DNS flush. User should open a fresh tab. See `research/dns-cache-bug.md`.
-- **Hard lockouts**: domains can be locked until a specific date. Server refuses grant/unblock/delete at both REST and MCP layers.
-- **pf must be enabled**: run `sudo ./enable-pf.sh` once. Daemon manages rules but does not enable pf itself. Without pf, only DNS blocking (bypassable via DoH).
-- **Daemon is stateless**: all state in server's config.json. Daemon restarts freely. Server re-pushes on next operation. Server re-applies on its own restart too.
-- **Priority domains vs bulk blocklist**: only ~28 "priority" distraction domains get IP-level pf resolution. Adult blocklist (75K+ domains) stays /etc/hosts-only (resolving all crashed the daemon).
-- **`block return` not `block drop`**: pf rules use `block return` for fast TCP RST. `block drop` causes 30-60s browser hangs.
-- **QUIC blocking**: pf also blocks `proto udp port 443` to prevent QUIC/HTTP3 fallback.
-- **AppleScript tab closing**: only Safari, Arc, Chrome supported.
-- **Proxy requires setup**: path blocking and delay friction need CA cert trusted + system proxy at 127.0.0.1:8080.
+- **Automation consent.** The tab sweep and tab close/reload need macOS Automation access
+  for `node` → Chrome/Safari/Arc. macOS asks once; until allowed, `/status` shows
+  `tabSweep.lastError`. A Homebrew node upgrade may ask again.
+- **Screen Recording.** Vigilant mode captures screenshots with `/usr/sbin/screencapture`,
+  which needs Screen Recording access for `node`. Without it, vigilant mode cannot see the
+  screen.
+- **Root runs user-owned files.** The LaunchDaemon runs `/opt/homebrew/bin/node` on
+  `~/dev/amber-focus/daemon/daemon.cjs`, both writable by the user. Any process running as
+  the user can therefore become root. The fix is a root-owned install, planned together
+  with the Network Extension filter that replaces hosts + pf.
+- **Enforcement gaps.** `/etc/hosts` and pf miss IPv6 for most sites, rotating CDN IPs, and
+  apps with their own resolver. The tab sweep covers browsers only. A Network Extension
+  content filter closes these; see `research/ne-filter-deep-dive.md`.
+- **Legacy hosts section.** `/etc/hosts` still carries an orphaned
+  `# BEGIN FOCUS SHIELD BLOCK` section (2026-02-21, ~124k domains) that no code rewrites.
+  It overrides grants for the domains it lists; the daemon reports them in
+  `legacyBlockedAllowed`, and `bin/prune-legacy-hosts-entry <domain>` removes one.
+- **Restart after a failed pass.** The diff base lives in memory until a pass completes. If
+  a pass writes hosts, pf then fails, and the daemon restarts before a pass completes, the
+  side effects of that diff (connection kills, Chromium DNS flush) do not run. Hosts and pf
+  still converge; the tab sweep closes tabs on newly blocked domains within 10 s.
+- **launchd "disabled" flag.** A reboot with the daemon marked disabled leaves it unloaded.
+  Fix: `sudo launchctl enable system/com.amberfocus.daemon`, then kickstart.
+- **pf must be enabled once:** `install-services.sh` runs `sudo ./enable-pf.sh`. pf rules use `block return` (fast
+  RST) and also block UDP 443 (QUIC).
 
 ## Vigilant Mode
 
-Intent-gated access with AI screenshot monitoring. Runs locally — no external dependencies.
+A grant with `vigilant: true` and an `intent` runs under AI monitoring.
+A re-grant without an intent keeps the active grant's intent, so an extension stays monitored.
+Implementation: `src/vigilant.ts`. API key: Keychain `cc/anthropic` / `api_key`.
 
-When a grant is issued with `vigilant: true` and an `intent` string:
-1. Screenshots captured every 10s via `screencapture -x`
-2. Each screenshot evaluated by Claude Haiku (claude-haiku-4-5) via Anthropic API
-3. Model judges whether user is on-task relative to declared intent
-4. 3 consecutive off-task evaluations → automatic grant revocation + aggressive reblock
-5. All evaluations logged to `~/.config/amber-focus/vigilant-log.json`
-
-API key retrieved from macOS Keychain: `security find-generic-password -s "cc/anthropic" -a "api_key" -w`
-
-Implementation: `src/vigilant.ts`. Wired into `server.ts` (REST) and `mcp.ts` (MCP tool).
-
-Original spec: `research/vigilant-mode-plan.md`
-
-## Config Files (Runtime)
+## Runtime Files
 
 | Path | Purpose |
 |------|---------|
-| `~/.config/amber-focus/config.json` | All app state (blocked, delayed, allowances, lockouts, categories) |
-| `~/.config/amber-focus/mcp-token` | Bearer token for MCP auth (auto-generated) |
-| `~/.config/amber-focus/server.log` | Server logs |
-| `~/.config/amber-focus/vigilant-log.json` | Vigilant mode evaluation history |
-| `~/.config/amber-focus/certs/` | MITM proxy CA certificate (auto-generated) |
-| `/var/log/amber-focus-daemon.log` | Daemon logs |
-| `/tmp/amberfocus.sock` | Unix socket for server-daemon IPC (chmod 666) |
-
-## Cloudflare Tunnel (Remote MCP)
-
-MCP endpoint can be exposed via Cloudflare Tunnel for remote access (e.g. Claude Web).
-- **LaunchAgent**: `com.cloudflare.tunnel.amberfocus` (auto-starts, KeepAlive)
-- Configure tunnel URL and token via your Cloudflare dashboard
-
-## Build and Run
-
-```bash
-npm install                 # dependencies
-npx tsc                     # build TypeScript
-./install.sh                # full install (daemon + server as launchd services)
-sudo ./enable-pf.sh         # enable IP-level blocking (once)
-
-# Connect to Claude Code:
-claude mcp add --transport http --scope user \
-  --header "Authorization: Bearer $(cat ~/.config/amber-focus/mcp-token)" \
-  amber-focus http://localhost:8053/mcp
-```
+| `~/.config/amber-focus/config.json` | All state |
+| `~/.config/amber-focus/server.log` | Server log |
+| `~/.config/amber-focus/vigilant-log.json` | Vigilant evaluations |
+| `/var/log/amber-focus-daemon.log` | Daemon log |
+| `/tmp/amberfocus.sock` | Server ↔ daemon IPC |

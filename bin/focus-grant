@@ -3,8 +3,8 @@
 #
 # This is the direct-action tool: once the decision to grant is made (see the
 # classification protocol in the /amber-focus skill + global CLAUDE.md cc-focus rules),
-# this does the entire dance — grant, re-apply if the daemon didn't, flush DNS,
-# verify blocked:false, and open the site — so no scavenger hunt is ever needed again.
+# this does the entire dance — grant, wait for the daemon to converge, verify against
+# OS truth (/etc/hosts, not the store), and open the site.
 #
 # Usage:
 #   focus-grant <brand-or-domain> [minutes] [reason...]
@@ -17,7 +17,10 @@
 #     (grants are per exact registrable domain; users hit either TLD).
 #   - A full domain ("zalando.de") grants exactly that one + its sibling TLD if known.
 #   - Default duration: 10 min. Always timed (auto-reblocks) — this tool never uses DELETE.
-#   - --vigilant "<intent>" enables AI screenshot monitoring for high-risk sites.
+#   - Grants are 1–60 min; the server refuses longer ones.
+#   - --vigilant "<intent>" enables AI monitoring for high-risk sites.
+#   - Exit 3 when a domain is still blocked at the OS level; the receipt says which
+#     layer blocks it (daemon down, legacy hosts section, ...).
 #
 # Requires: amber-focus server on :8053 (curl localhost:8053/status). No sudo.
 
@@ -29,6 +32,7 @@ REASON=""
 VIGILANT=""
 INTENT=""
 ARG=""
+VERIFY_TIMEOUT_S=20
 
 # --- parse args ---------------------------------------------------------------
 if [[ $# -lt 1 ]]; then
@@ -38,39 +42,62 @@ fi
 ARG="$1"; shift
 
 # optional numeric minutes as the next token
-if [[ "${1:-}" =~ ^[0-9]+$ ]]; then MIN="$1"; shift; fi
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then MIN=$((10#$1)); shift; fi
+if (( MIN < 1 || MIN > 60 )); then
+  echo "✗ minutes must be 1–60 (got $MIN). Grant again when it runs out."
+  exit 1
+fi
 
 # remaining tokens = reason, with --vigilant "intent" pulled out
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vigilant) VIGILANT="true"; INTENT="${2:-}"; shift 2 ;;
+    --vigilant)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "✗ --vigilant needs an intent: --vigilant \"what you will do there\""
+        exit 1
+      fi
+      VIGILANT="true"; INTENT="$2"; shift 2 ;;
     *) REASON="${REASON:+$REASON }$1"; shift ;;
   esac
 done
 [[ -z "$REASON" ]] && REASON="Granted via focus-grant"
 
+json_field() { python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+v=d
+for k in sys.argv[1].split("."):
+    v=v.get(k) if isinstance(v,dict) else None
+print("" if v is None else (str(v).lower() if isinstance(v,bool) else v))' "$1"; }
+
 # --- preflight ----------------------------------------------------------------
-if ! curl -s -m4 "$API/status" >/dev/null 2>&1; then
+STATUS=$(curl -s -m4 "$API/status" 2>/dev/null) || true
+if [[ -z "$STATUS" ]]; then
   echo "✗ amber-focus server not reachable on :8053. Is it running? (launchctl list | grep amberfocus)"
+  exit 2
+fi
+if [[ "$(echo "$STATUS" | json_field daemonRunning)" != "true" ]]; then
+  echo "✗ amber-focus daemon is not running — grants cannot reach /etc/hosts."
+  echo "  Fix (needs sudo): sudo launchctl enable system/com.amberfocus.daemon && sudo launchctl kickstart -k system/com.amberfocus.daemon"
   exit 2
 fi
 
 # --- expand brand → domain list ----------------------------------------------
-# Known sibling TLDs to cover when a bare brand or single TLD is given.
 declare -a DOMAINS=()
 if [[ "$ARG" == *.* ]]; then
   DOMAINS+=("$ARG")
   base="${ARG%.*}"; tld="${ARG##*.}"
-  # add the sibling .de/.com if it exists on the blocklist
+  # add the sibling .de/.com if it is on the blocklist
   for sib in de com; do
     [[ "$sib" == "$tld" ]] && continue
     cand="${base}.${sib}"
-    if curl -s -m4 "$API/api/check/$cand" 2>/dev/null | grep -q '"blocked":true'; then
+    if [[ "$(curl -s -m4 "$API/api/check/$cand" 2>/dev/null | json_field onBlocklist)" == "true" ]]; then
       DOMAINS+=("$cand")
     fi
   done
 else
-  # bare brand → cover both common TLDs
   DOMAINS+=("${ARG}.de" "${ARG}.com")
 fi
 
@@ -78,45 +105,50 @@ fi
 grant_one() {
   local d="$1"
   local body
-  if [[ -n "$VIGILANT" ]]; then
-    body=$(printf '{"domain":"%s","minutes":%s,"reason":"%s","vigilant":true,"intent":"%s"}' "$d" "$MIN" "$REASON" "$INTENT")
-  else
-    body=$(printf '{"domain":"%s","minutes":%s,"reason":"%s"}' "$d" "$MIN" "$REASON")
-  fi
-  curl -s -m8 -X POST "$API/api/grant" -H 'Content-Type: application/json' -d "$body"
+  body=$(python3 -c 'import json,sys
+d={"domain":sys.argv[1],"minutes":int(sys.argv[2]),"reason":sys.argv[3]}
+if sys.argv[4]=="true":
+    d["vigilant"]=True; d["intent"]=sys.argv[5]
+print(json.dumps(d))' "$d" "$MIN" "$REASON" "${VIGILANT:-false}" "$INTENT")
+  curl -s -m60 -X POST "$API/api/grant" -H 'Content-Type: application/json' -d "$body"
 }
 
 echo "→ granting ${MIN} min for: ${DOMAINS[*]}  (reason: ${REASON})"
 any_ok=""
 for d in "${DOMAINS[@]}"; do
   resp=$(grant_one "$d")
-  if echo "$resp" | grep -q '"success":true'; then
+  if [[ "$(echo "$resp" | json_field success)" == "true" ]]; then
     any_ok="yes"
+    if [[ -n "$VIGILANT" && "$(echo "$resp" | json_field vigilant)" != "true" ]]; then
+      echo "  ! $d — vigilant session did not start (check server.log)"
+    fi
   elif echo "$resp" | grep -q 'HARD LOCKED'; then
     echo "  ✗ $d — HARD LOCKED, refused: $resp"
   else
-    echo "  ? $d — $resp"
+    echo "  ? $d — ${resp:-no response}"
   fi
 done
 
-# --- flush DNS ----------------------------------------------------------------
-curl -s -m8 -X POST "$API/api/flush-dns" >/dev/null 2>&1
-
-# --- verify + self-heal if the daemon didn't re-apply ------------------------
-reapplied=""
+# --- verify against OS truth; nudge the daemon if it has not converged yet ---
 verify_one() {
-  curl -s -m5 "$API/api/check/$1" 2>/dev/null | grep -q '"blocked":false'
+  # prints the check JSON on success (OS says unblocked), returns 1 otherwise
+  local line
+  line=$(curl -s -m5 "$API/api/check/$1" 2>/dev/null) || return 1
+  [[ "$(echo "$line" | json_field blocked)" == "false" ]] || return 1
+  echo "$line"
 }
+
+deadline=$(( $(date +%s) + VERIFY_TIMEOUT_S ))
+nudged=""
 for d in "${DOMAINS[@]}"; do
-  if ! verify_one "$d"; then
-    if [[ -z "$reapplied" ]]; then
-      # daemon sometimes doesn't re-write /etc/hosts on grant — force one re-apply
-      curl -s -m8 -X POST "$API/api/shield/disable" >/dev/null 2>&1
-      curl -s -m8 -X POST "$API/api/shield/enable"  >/dev/null 2>&1
-      curl -s -m8 -X POST "$API/api/flush-dns"      >/dev/null 2>&1
-      reapplied="yes"
+  until verify_one "$d" >/dev/null; do
+    if [[ $(date +%s) -ge $deadline ]]; then break; fi
+    if [[ -z "$nudged" ]]; then
+      curl -s -m30 -X POST "$API/api/reconcile" >/dev/null 2>&1
+      nudged="yes"
     fi
-  fi
+    sleep 1
+  done
 done
 
 # --- report -------------------------------------------------------------------
@@ -124,16 +156,37 @@ echo "── result ──"
 all_open="yes"
 for d in "${DOMAINS[@]}"; do
   line=$(curl -s -m5 "$API/api/check/$d" 2>/dev/null)
-  if echo "$line" | grep -q '"blocked":false'; then
+  if [[ "$(echo "$line" | json_field blocked)" == "false" ]]; then
     echo "  ✓ $d  open (${MIN} min, auto-reblocks)"
   else
-    echo "  ✗ $d  STILL BLOCKED — $line"
+    src=$(echo "$line" | json_field source)
+    conv=$(echo "$line" | json_field converged)
+    case "$src" in
+      legacy) why="blocked by the orphaned legacy hosts section — sudo ~/dev/amber-focus/bin/prune-legacy-hosts-entry $d" ;;
+      managed) why="daemon has not converged (converged=$conv) — check: curl -s localhost:8053/status" ;;
+      other) why="blocked by a foreign /etc/hosts entry" ;;
+      *) why="${line:-no response}" ;;
+    esac
+    echo "  ✗ $d  STILL BLOCKED — $why"
     all_open=""
   fi
 done
 
+VIG=$(curl -s -m4 "$API/api/vigilant/status" 2>/dev/null)
+if [[ -n "$VIGILANT" ]]; then
+  if [[ "$(echo "$VIG" | json_field active)" == "true" ]]; then
+    if [[ "$(echo "$VIG" | json_field degraded)" == "true" ]]; then
+      echo "  ! vigilant: active but DEGRADED (monitoring failing) — only the timer protects this grant"
+    else
+      echo "  ✓ vigilant: monitoring"
+    fi
+  else
+    echo "  ! vigilant: NOT active — only the timer protects this grant"
+  fi
+fi
+
 # --- open the primary site ----------------------------------------------------
-if [[ -n "$any_ok" ]]; then
+if [[ -n "$any_ok" && -n "$all_open" ]]; then
   open "https://${DOMAINS[0]}" 2>/dev/null || true
 fi
 
