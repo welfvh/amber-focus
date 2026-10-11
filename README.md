@@ -50,7 +50,7 @@ One command. Takes about 2 minutes.
 curl -fsSL amber.computer/focus/install | bash
 ```
 
-This clones the repo to `~/dev/amber-focus`, builds it, asks which categories to block, and installs the daemon (needs your password once) and the server as background services.
+This clones the repo to `~/dev/amber-focus`, builds it, asks which categories to block, enables the pf firewall, and installs the daemon and the server as background services. The firewall and the daemon need your password.
 
 **Prerequisites:** macOS 14+, Node.js 18+ (`brew install node`), [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 

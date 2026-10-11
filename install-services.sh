@@ -105,7 +105,14 @@ sed -e "s|__NODE_PATH__|$NODE_PATH|g" \
     "$SCRIPT_DIR/daemon/com.amberfocus.daemon.plist.template" \
     > "$SCRIPT_DIR/daemon/$DAEMON_PLIST_NAME.plist"
 
-# --- 8. Install daemon (requires sudo) ---
+# --- 8. Enable the pf firewall (requires sudo) ---
+# Before the daemon starts: its first pass replaces these static rules with its own.
+echo ""
+echo "Enabling pf firewall (requires sudo)..."
+PF_OK=1
+sudo "$SCRIPT_DIR/enable-pf.sh" || PF_OK=0
+
+# --- 9. Install daemon (requires sudo) ---
 echo ""
 echo "Installing daemon (requires sudo)..."
 sudo cp "$SCRIPT_DIR/daemon/$DAEMON_PLIST_NAME.plist" /Library/LaunchDaemons/
@@ -115,7 +122,7 @@ sudo launchctl enable system/$DAEMON_PLIST_NAME
 sudo launchctl bootstrap system "/Library/LaunchDaemons/$DAEMON_PLIST_NAME.plist"
 echo "Daemon installed."
 
-# --- 9. Install server (user agent) ---
+# --- 10. Install server (user agent) ---
 echo "Installing server..."
 mkdir -p ~/Library/LaunchAgents
 cp "$SCRIPT_DIR/$SERVER_PLIST_NAME.plist" ~/Library/LaunchAgents/
@@ -123,7 +130,7 @@ launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist
 echo "Server installed."
 
-# --- 10. Verify ---
+# --- 11. Verify ---
 echo ""
 echo "Waiting for server..."
 sleep 3
@@ -136,9 +143,11 @@ if curl -s localhost:8053/status | grep -q "running"; then
     echo "           /var/log/amber-focus-daemon.log (sudo)"
     echo ""
     echo "Grant timed access: $SCRIPT_DIR/bin/focus-grant <site> [minutes] [reason]"
-    echo ""
-    echo "--- Optional: pf firewall (IP-level blocking) ---"
-    echo "sudo $SCRIPT_DIR/enable-pf.sh"
+    if [ "$PF_OK" = 0 ]; then
+        echo ""
+        echo "WARNING: pf firewall not enabled, so IP-level blocking is off. Run:"
+        echo "  sudo $SCRIPT_DIR/enable-pf.sh"
+    fi
 else
     echo ""
     echo "WARNING: Server not responding. Check logs:"

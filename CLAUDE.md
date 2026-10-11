@@ -73,7 +73,7 @@ enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlo
 | `app/retreat-enforcer.swift` | Retreat mode app enforcer (user LaunchAgent) |
 | `bin/focus-grant` | The one command for timed grants: expand brand → TLDs, grant, verify OS truth, open the site |
 | `install.sh` | One-line installer: prerequisites, clone, then `install-services.sh` |
-| `install-services.sh` | Build, choose categories (first install), install daemon + server services |
+| `install-services.sh` | Build, choose categories (first install), enable pf, install daemon + server services |
 
 ## API
 
@@ -155,7 +155,7 @@ npm run redeploy                                  # build, restart server + daem
   `legacyBlockedAllowed`, and `bin/prune-legacy-hosts-entry <domain>` removes one.
 - **launchd "disabled" flag.** A reboot with the daemon marked disabled leaves it unloaded.
   Fix: `sudo launchctl enable system/com.amberfocus.daemon`, then kickstart.
-- **pf must be enabled once:** `sudo ./enable-pf.sh`. pf rules use `block return` (fast
+- **pf must be enabled once:** `install-services.sh` runs `sudo ./enable-pf.sh`. pf rules use `block return` (fast
   RST) and also block UDP 443 (QUIC).
 
 ## Vigilant Mode

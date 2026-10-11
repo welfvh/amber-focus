@@ -5,7 +5,7 @@
 # What it does:
 #   1. Checks prerequisites (macOS, Xcode CLT, Node.js 18+, Claude Code)
 #   2. Clones the repo to ~/dev/amber-focus (or pulls if it exists)
-#   3. Runs install-services.sh: build, block categories, daemon + server services
+#   3. Runs install-services.sh: build, block categories, pf firewall, daemon + server services
 
 set -euo pipefail
 
