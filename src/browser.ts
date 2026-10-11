@@ -54,7 +54,7 @@ interface ScriptResult {
   errors: string[];
 }
 
-type Op = 'list' | 'close' | 'reload';
+type Op = 'list' | 'close' | 'reload' | 'closeUrls';
 
 export const SCRIPT = `
 ${hostOf.toString()}
@@ -85,7 +85,9 @@ function run(argv) {
           var url = '';
           try { url = t.url() || ''; } catch (e) { continue; }
           var host = hostOf(url);
-          var hit = host !== null && hostMatches(host, req.domains || []);
+          var hit = req.op === 'closeUrls'
+            ? (req.urls || []).indexOf(url) !== -1
+            : host !== null && hostMatches(host, req.domains || []);
           if (req.op === 'list') {
             if (req.domains && !hit) continue;
             var title = '';
@@ -93,7 +95,7 @@ function run(argv) {
             result.tabs.push({ browser: name, url: url, title: title, active: ti === activeIndex,
               frontWindow: wi === 0, browserFrontmost: frontmost });
           } else if (hit) {
-            if (req.op === 'close') t.close();
+            if (req.op === 'close' || req.op === 'closeUrls') t.close();
             else if (safari) t.url = url; // Safari tabs have no reload verb
             else t.reload();
             result.count++;
@@ -108,8 +110,13 @@ function run(argv) {
 }
 `;
 
-async function runScript(op: Op, domains?: string[]): Promise<ScriptResult> {
-  const req = { op, browsers: BROWSERS, ...(domains ? { domains: domains.filter(isValidHostname) } : {}) };
+async function runScript(op: Op, domains?: string[], urls?: string[]): Promise<ScriptResult> {
+  const req = {
+    op,
+    browsers: BROWSERS,
+    ...(domains ? { domains: domains.filter(isValidHostname) } : {}),
+    ...(urls ? { urls: urls.filter(u => hostOf(u) !== null) } : {}),
+  };
   try {
     const { stdout } = await execFileAsync(
       OSASCRIPT,
@@ -133,6 +140,13 @@ export async function listTabs(domains?: string[]): Promise<{ tabs: BrowserTab[]
 export async function closeTabs(domains: string[]): Promise<{ count: number; errors: string[] }> {
   if (domains.length === 0) return { count: 0, errors: [] };
   const { count, errors } = await runScript('close', domains);
+  return { count, errors };
+}
+
+/** Close every tab whose URL is exactly one of `urls` (as `listTabs` reported them). */
+export async function closeUrls(urls: string[]): Promise<{ count: number; errors: string[] }> {
+  if (urls.length === 0) return { count: 0, errors: [] };
+  const { count, errors } = await runScript('closeUrls', undefined, urls);
   return { count, errors };
 }
 

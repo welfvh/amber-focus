@@ -35,7 +35,7 @@ You ──Claude Code──> focus-grant ──> Server (127.0.0.1:8053) ──>
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - Allow **Automation** when macOS asks whether `node` may control your browser (the tab sweep reads and closes tabs)
 
-**For vigilant mode** (AI screenshot monitoring):
+**For vigilant mode** (AI monitoring of a grant):
 - Anthropic API key stored in macOS Keychain — install [cc-keys](https://github.com/welfvh/cc-keys) then:
   ```bash
   /cc-keys add anthropic            # register the service
@@ -116,10 +116,13 @@ Email, banking, maps, dev tools — never touched.
 
 When a grant is active with vigilant mode:
 
-1. Screenshots captured every 10s via `screencapture -x`
-2. Evaluated by Claude Haiku against the user's declared intent
-3. 3 consecutive off-task evaluations → auto-revoke + full reblock
-4. All evaluations logged locally to `~/.config/amber-focus/vigilant-log.json`
+1. Every 15 s the server reads the tabs open on the granted site (URL and title; no screenshots).
+2. Claude Haiku judges each new page against the declared intent: on task, navigation (home page, search, login) or off task.
+3. An off-task tab closes at once and counts as a strike. A navigation page may stay open for 2 minutes.
+4. 3 strikes end the grant. So do 3 checks in a row that cannot read the tabs or reach the model: monitoring fails closed.
+5. A notification names every closed tab and the end of the grant. Everything is logged to `~/.config/amber-focus/vigilant-log.jsonl`.
+
+A vigilant grant is refused up front when the API key is missing or the browser tabs cannot be read.
 
 API key from macOS Keychain via [cc-keys](https://github.com/welfvh/cc-keys): `cc/anthropic` / `api_key`.
 

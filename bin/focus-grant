@@ -176,9 +176,9 @@ VIG=$(curl -s -m4 "$API/api/vigilant/status" 2>/dev/null)
 if [[ -n "$VIGILANT" ]]; then
   if [[ "$(echo "$VIG" | json_field active)" == "true" ]]; then
     if [[ "$(echo "$VIG" | json_field degraded)" == "true" ]]; then
-      echo "  ! vigilant: active but DEGRADED (monitoring failing) — only the timer protects this grant"
+      echo "  ! vigilant: active but DEGRADED (monitoring failing) — the grant ends after 3 failed checks"
     else
-      echo "  ✓ vigilant: monitoring"
+      echo "  ✓ vigilant: monitoring (off-intent tabs close; 3 strikes end the grant)"
     fi
   else
     echo "  ! vigilant: NOT active — only the timer protects this grant"
