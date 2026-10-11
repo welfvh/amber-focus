@@ -198,11 +198,8 @@ export function createVigilant(deps: VigilantDeps) {
       if (toClose.size > 0) {
         const result = await deps.closePages([...toClose.values()].map(p => ({ url: p.url, title: p.title })));
         if (!live()) return;
-        if (result.errors.length > 0) {
-          await fail(s, `could not close off-intent tabs: ${result.errors.join('; ')}`);
-          return;
-        }
         // Only a tab this call closed counts a strike: not one that closed or changed after the listing.
+        // Tabs that did close count even when another browser failed.
         const closed = new Set(result.closed.map(pageKey));
         for (const [key, page] of toClose) {
           if (!closed.has(key)) continue;
@@ -215,6 +212,10 @@ export function createVigilant(deps: VigilantDeps) {
         }
         if (s.strikes >= MAX_STRIKES) {
           await end(s, `${s.strikes} off-intent tabs for "${s.intent}"`);
+          return;
+        }
+        if (result.errors.length > 0) {
+          await fail(s, `could not close off-intent tabs: ${result.errors.join('; ')}`);
           return;
         }
       }

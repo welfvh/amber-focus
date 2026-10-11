@@ -13,6 +13,7 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
     now: 1_000_000,
     tabs: [] as BrowserTab[],
     listErrors: [] as string[],
+    closeErrors: [] as string[],
     judgeError: null as string | null,
     /** Most tabs one fake model call can answer; more stand in for truncated output. */
     judgeCapacity: Infinity,
@@ -34,7 +35,7 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
       const hit = state.tabs.filter(t => pages.some(p => p.url === t.url && p.title === t.title));
       state.closed.push(...hit.map(t => t.url));
       state.tabs = state.tabs.filter(t => !hit.includes(t));
-      return { closed: hit.map(t => ({ url: t.url, title: t.title })), errors: [] };
+      return { closed: hit.map(t => ({ url: t.url, title: t.title })), errors: state.closeErrors };
     },
     judge: async (_d, _i, tabs) => {
       if (state.judgeError) throw new Error(state.judgeError);
@@ -217,6 +218,18 @@ describe('vigilant tick', () => {
 });
 
 describe('vigilant fails closed', () => {
+  it('counts a closed tab even when another browser fails to close', async () => {
+    const { v, id, state } = world({});
+    state.tabs = [tab('https://youtube.com/watch?v=cats', 'Funny cats')];
+    state.closeErrors = ['Arc: Not authorized to send Apple events'];
+    await v.tick(id);
+    const session = v.status().sessions[0];
+    expect(state.closed).toEqual(['https://youtube.com/watch?v=cats']);
+    expect(session.strikes).toBe(1);
+    expect(session.consecutiveFailures).toBe(1);
+    v.stop(id);
+  });
+
   it('ends the grant after MAX_FAILURES ticks that cannot read tabs', async () => {
     const { v, id, state } = world({});
     state.listErrors = ['Google Chrome: Not authorized to send Apple events'];
