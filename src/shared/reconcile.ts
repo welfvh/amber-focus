@@ -199,7 +199,8 @@ export interface HostsIndex {
   lookup(domain: string): HostsBlockSource | null;
 }
 
-const BLOCK_LINE = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+/** Addresses that make a hosts entry a block. */
+const BLOCK_ADDRESSES = new Set(['0.0.0.0', '::', '127.0.0.1', '::1']);
 
 export function buildHostsIndex(content: string): HostsIndex {
   const managed = findSpan(content, MARKER_START, MARKER_END);
@@ -211,16 +212,21 @@ export function buildHostsIndex(content: string): HostsIndex {
   while (offset <= content.length) {
     lineEnd = content.indexOf('\n', offset);
     if (lineEnd === -1) lineEnd = content.length;
-    const line = content.slice(offset, lineEnd);
-    const m = BLOCK_LINE.exec(line);
-    if (m) {
-      const host = m[1].toLowerCase();
+    // An entry is `address host [host...]`, optionally followed by a `# comment`.
+    let line = content.slice(offset, lineEnd);
+    const hash = line.indexOf('#');
+    if (hash !== -1) line = line.slice(0, hash);
+    const fields = line.trim().split(/\s+/);
+    if (fields.length > 1 && BLOCK_ADDRESSES.has(fields[0])) {
       const inManaged = managed !== null && offset >= managed.start && offset < managed.end;
       const inLegacy = legacy !== null && offset >= legacy.start && offset < legacy.end;
       const source: HostsBlockSource = inManaged ? 'managed' : inLegacy ? 'legacy' : 'other';
-      const existing = map.get(host);
-      if (existing === undefined || (existing === 'managed' && source !== 'managed')) {
-        map.set(host, source);
+      for (let i = 1; i < fields.length; i++) {
+        const host = fields[i].toLowerCase();
+        const existing = map.get(host);
+        if (existing === undefined || (existing === 'managed' && source !== 'managed')) {
+          map.set(host, source);
+        }
       }
     }
     offset = lineEnd + 1;

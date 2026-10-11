@@ -14355,7 +14355,7 @@ function diffDomains(prev, next) {
     removed: [...p].filter((d) => !n.has(d)).sort()
   };
 }
-var BLOCK_LINE = /^(?:0\.0\.0\.0|::|127\.0\.0\.1|::1)[ \t]+(\S+)[ \t]*$/;
+var BLOCK_ADDRESSES = /* @__PURE__ */ new Set(["0.0.0.0", "::", "127.0.0.1", "::1"]);
 function buildHostsIndex(content) {
   const managed = findSpan(content, MARKER_START, MARKER_END);
   const legacy = findSpan(content, LEGACY_MARKER_START, LEGACY_MARKER_END);
@@ -14365,16 +14365,20 @@ function buildHostsIndex(content) {
   while (offset <= content.length) {
     lineEnd = content.indexOf("\n", offset);
     if (lineEnd === -1) lineEnd = content.length;
-    const line = content.slice(offset, lineEnd);
-    const m = BLOCK_LINE.exec(line);
-    if (m) {
-      const host = m[1].toLowerCase();
+    let line = content.slice(offset, lineEnd);
+    const hash2 = line.indexOf("#");
+    if (hash2 !== -1) line = line.slice(0, hash2);
+    const fields = line.trim().split(/\s+/);
+    if (fields.length > 1 && BLOCK_ADDRESSES.has(fields[0])) {
       const inManaged = managed !== null && offset >= managed.start && offset < managed.end;
       const inLegacy = legacy !== null && offset >= legacy.start && offset < legacy.end;
       const source = inManaged ? "managed" : inLegacy ? "legacy" : "other";
-      const existing = map2.get(host);
-      if (existing === void 0 || existing === "managed" && source !== "managed") {
-        map2.set(host, source);
+      for (let i = 1; i < fields.length; i++) {
+        const host = fields[i].toLowerCase();
+        const existing = map2.get(host);
+        if (existing === void 0 || existing === "managed" && source !== "managed") {
+          map2.set(host, source);
+        }
       }
     }
     offset = lineEnd + 1;

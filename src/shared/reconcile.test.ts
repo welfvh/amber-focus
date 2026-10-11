@@ -124,6 +124,23 @@ describe('hostsBlocks', () => {
     expect(hostsBlocks('0.0.0.0 foo.com\n' + content, 'foo.com')).toBe('other');
   });
 
+  it('reads entries with inline comments, several hostnames, or leading whitespace', () => {
+    const foreign = [
+      '0.0.0.0 commented.com # blocked',
+      '0.0.0.0\tone.com two.com  three.com',
+      '  :: indented.com',
+      '# 0.0.0.0 disabled.com',
+      '10.0.0.1 internal.com',
+    ].join('\n') + '\n';
+    const index = buildHostsIndex(foreign + content);
+    for (const d of ['commented.com', 'one.com', 'two.com', 'three.com', 'indented.com']) {
+      expect(index.lookup(d)).toBe('other');
+    }
+    expect(index.lookup('disabled.com')).toBeNull();
+    expect(index.lookup('internal.com')).toBeNull();
+    expect(index.lookup('blocked')).toBeNull();
+  });
+
   it('indexes once and answers lookups without rescanning', () => {
     const index = buildHostsIndex(content);
     expect(index.size).toBeGreaterThan(0);
