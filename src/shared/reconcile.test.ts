@@ -93,9 +93,12 @@ describe('hosts section', () => {
     expect(removed).toBe('127.0.0.1 localhost\n');
   });
 
-  it('renders nothing when there is nothing to block', () => {
-    expect(renderHostsSection({ shieldActive: true, blockedDomains: [] }, 't')).toBe('');
-    expect(renderHostsSection({ shieldActive: false, blockedDomains: ['a.com'] }, 't')).toBe('');
+  it('records an empty blocklist as a known state when nothing is blocked', () => {
+    for (const state of [{ shieldActive: true, blockedDomains: [] }, { shieldActive: false, blockedDomains: ['a.com'] }]) {
+      const content = replaceManagedSection('127.0.0.1 localhost\n', renderHostsSection(state, 't'));
+      expect(parseManagedDomains(content)).toEqual([]);
+      expect(content).not.toMatch(/^(0\.0\.0\.0|::) /m);
+    }
   });
 });
 

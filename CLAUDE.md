@@ -40,11 +40,12 @@ loopback address (DNS rebinding), and refuses every request that carries an `Ori
 header — so no web page can call it. There is no CORS, no MCP endpoint and no tunnel.
 
 **Desired state → reconcile.** Every mutation only edits `config.json`, then asks the
-daemon for a pass. The pass is idempotent: it renders the managed hosts section, writes it
-only when it differs, refreshes pf on change, and derives side effects from the diff
-between the base domains recorded in the previous section (`# Domains:` line) and the new
-ones. If `config.json` is unreadable, the pass stops and the OS keeps its blocks (fail
-closed); `lastError` says why.
+daemon for a pass. The pass is idempotent: it renders the managed hosts section (also when
+nothing is blocked), writes it only when it differs, refreshes pf on change, and derives
+side effects from the diff between the last complete pass and the new state. After a
+daemon restart, the base is the section's `# Domains:` line. A pass that fails partway
+keeps the old base, so the next pass retries pf and the side effects. If `config.json` is
+unreadable, the pass stops and the OS keeps its blocks (fail closed); `lastError` says why.
 
 **Truth, not intent.** `GET /api/check/:domain` returns `blocked` (what `/etc/hosts`
 enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlocked`.

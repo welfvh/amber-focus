@@ -48,7 +48,7 @@ function makeDeps() {
   files.set(HOSTS, '127.0.0.1 localhost\n');
   const setConfig = (cfg: unknown) => files.set(CONFIG, JSON.stringify(cfg));
   const advance = (ms: number) => { now += ms; };
-  return { r, files, writes, pf, browser, setConfig, advance };
+  return { r, sys, files, writes, pf, browser, setConfig, advance, now: () => now };
 }
 
 describe('Reconciler', () => {
@@ -125,6 +125,26 @@ describe('Reconciler', () => {
     expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
   });
 
+  it('enforces connections on expiry after a daemon restart while every domain was allowed', async () => {
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000 }] });
+    await d.r.tick('boot');
+
+    d.advance(120_000);
+    const restarted = new Reconciler({
+      sys: d.sys,
+      pf: d.pf as never,
+      browser: d.browser as never,
+      log: () => {},
+      hostsPath: HOSTS,
+      now: d.now,
+      sleep: async () => {},
+    });
+    restarted.configPath = CONFIG;
+    await restarted.tick('boot');
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
+    expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
+  });
+
   it('keeps the OS untouched and reports the error when config.json is unreadable', async () => {
     d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
     await d.r.tick('boot');
@@ -149,13 +169,14 @@ describe('Reconciler', () => {
     expect(s.lastError).toMatch(/config path/);
   });
 
-  it('removes the section when the shield is switched off', async () => {
+  it('empties the section when the shield is switched off', async () => {
     d.setConfig({ blockedDomains: ['a.com'], allowances: [], shieldActive: true });
     await d.r.tick('boot');
     d.setConfig({ blockedDomains: ['a.com'], allowances: [], shieldActive: false });
     const s = await d.r.tick('config-change');
     expect(s.shieldActive).toBe(false);
-    expect(d.files.get(HOSTS)).toBe('127.0.0.1 localhost\n');
+    expect(d.files.get(HOSTS)).not.toContain('a.com\n');
+    expect(d.files.get(HOSTS)).toMatch(/^# Domains:$/m);
     expect(d.pf.updateStaticRules).toHaveBeenLastCalledWith(false);
     expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
   });

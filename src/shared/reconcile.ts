@@ -15,7 +15,7 @@ export const MARKER_END = '# END AMBER FOCUS BLOCK';
 export const LEGACY_MARKER_START = '# BEGIN FOCUS SHIELD BLOCK';
 export const LEGACY_MARKER_END = '# END FOCUS SHIELD BLOCK';
 
-const DOMAINS_LINE_PREFIX = '# Domains: ';
+const DOMAINS_LINE_PREFIX = '# Domains:';
 
 /** The subset of config.json the daemon needs. Unknown keys are ignored. */
 export const DesiredConfigSchema = z.object({
@@ -88,18 +88,20 @@ export function activeAllowanceDomains(cfg: DesiredConfig, now: number): string[
 // --- /etc/hosts managed section ---
 
 /**
- * Render the managed section. Empty string when there is nothing to block.
- * The `# Domains:` line records the base domains so a later pass can diff
- * against what was applied, even across daemon restarts.
+ * Render the managed section. The `# Domains:` line records the base domains
+ * so a later pass can diff against what was applied, even across daemon
+ * restarts. The section is rendered even when nothing is blocked (shield off,
+ * or every domain allowed): an empty Domains line is a known state, so the
+ * pass that blocks those domains again also enforces their connections.
  */
 export function renderHostsSection(state: DesiredState, generatedAt: string): string {
-  if (!state.shieldActive || state.blockedDomains.length === 0) return '';
-  const variants = collectAllDomainsWithVariants(state.blockedDomains);
+  const domains = state.shieldActive ? state.blockedDomains : [];
+  const variants = collectAllDomainsWithVariants(domains);
   const lines = [
     MARKER_START,
     `# Generated: ${generatedAt}`,
     `# Blocking ${variants.length} domains`,
-    DOMAINS_LINE_PREFIX + state.blockedDomains.join(' '),
+    DOMAINS_LINE_PREFIX + domains.map(d => ' ' + d).join(''),
   ];
   for (const host of variants) {
     lines.push(`0.0.0.0 ${host}`);
@@ -142,7 +144,7 @@ export function parseManagedDomains(content: string): string[] | null {
     if (line.startsWith(DOMAINS_LINE_PREFIX)) {
       return line
         .slice(DOMAINS_LINE_PREFIX.length)
-        .split(' ')
+        .split(/\s+/)
         .filter(Boolean)
         .sort();
     }

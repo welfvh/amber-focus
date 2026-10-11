@@ -138,8 +138,8 @@ export class Reconciler {
         await this.pf.refreshDynamicRules(desired.blockedDomains, desired.shieldActive);
       }
 
-      // Unknown previous state (fresh install, old section format, no complete
-      // pass yet): converge hosts and pf only; no connection side effects to derive.
+      // Unknown previous state (fresh install or old section format, before the
+      // first complete pass): converge hosts and pf only; no side effects to derive.
       const diff = prevDomains ? diffDomains(prevDomains, desired.blockedDomains) : { added: [], removed: [] };
       if (diff.added.length > 0) {
         if (diff.added.length <= MAX_INDIVIDUAL_ENFORCE) {

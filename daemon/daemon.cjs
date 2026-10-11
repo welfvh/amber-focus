@@ -14262,7 +14262,7 @@ var MARKER_START = "# BEGIN AMBER FOCUS BLOCK";
 var MARKER_END = "# END AMBER FOCUS BLOCK";
 var LEGACY_MARKER_START = "# BEGIN FOCUS SHIELD BLOCK";
 var LEGACY_MARKER_END = "# END FOCUS SHIELD BLOCK";
-var DOMAINS_LINE_PREFIX = "# Domains: ";
+var DOMAINS_LINE_PREFIX = "# Domains:";
 var DesiredConfigSchema = external_exports.object({
   blockedDomains: external_exports.array(external_exports.string()).default([]),
   allowances: external_exports.array(external_exports.object({ domain: external_exports.string(), expiresAt: external_exports.number() }).loose()).default([]),
@@ -14297,13 +14297,13 @@ function activeAllowanceDomains(cfg, now) {
   return activeAllowances(cfg.allowances, now);
 }
 function renderHostsSection(state, generatedAt) {
-  if (!state.shieldActive || state.blockedDomains.length === 0) return "";
-  const variants = collectAllDomainsWithVariants(state.blockedDomains);
+  const domains = state.shieldActive ? state.blockedDomains : [];
+  const variants = collectAllDomainsWithVariants(domains);
   const lines = [
     MARKER_START,
     `# Generated: ${generatedAt}`,
     `# Blocking ${variants.length} domains`,
-    DOMAINS_LINE_PREFIX + state.blockedDomains.join(" ")
+    DOMAINS_LINE_PREFIX + domains.map((d) => " " + d).join("")
   ];
   for (const host of variants) {
     lines.push(`0.0.0.0 ${host}`);
@@ -14330,7 +14330,7 @@ function parseManagedDomains(content) {
   if (!section) return null;
   for (const line of section.split("\n")) {
     if (line.startsWith(DOMAINS_LINE_PREFIX)) {
-      return line.slice(DOMAINS_LINE_PREFIX.length).split(" ").filter(Boolean).sort();
+      return line.slice(DOMAINS_LINE_PREFIX.length).split(/\s+/).filter(Boolean).sort();
     }
   }
   return null;
