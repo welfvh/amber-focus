@@ -146,8 +146,9 @@ export class PfManager {
     });
   }
 
+  /** Throws when pfctl cannot load the rules: the reconcile pass fails and retries. */
   private async reload(): Promise<void> {
-    await this.sys.execSilent('/sbin/pfctl', ['-f', PF_CONF_PATH]);
+    await this.sys.exec('/sbin/pfctl', ['-f', PF_CONF_PATH]);
   }
 }
 

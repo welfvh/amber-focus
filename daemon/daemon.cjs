@@ -292,8 +292,9 @@ var PfManager = class {
       return ips;
     });
   }
+  /** Throws when pfctl cannot load the rules: the reconcile pass fails and retries. */
   async reload() {
-    await this.sys.execSilent("/sbin/pfctl", ["-f", PF_CONF_PATH]);
+    await this.sys.exec("/sbin/pfctl", ["-f", PF_CONF_PATH]);
   }
 };
 function generateStaticRules() {

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Reconciler } from './reconciler.js';
+import { PfManager } from './pf.js';
+import { OperationQueue } from './queue.js';
 import type { SystemOperations } from './system.js';
 import { LEGACY_MARKER_START, LEGACY_MARKER_END } from '../shared/reconcile.js';
 
@@ -109,6 +111,48 @@ describe('Reconciler', () => {
     expect(retried.lastError).toBeNull();
     expect(d.pf.refreshDynamicRules).toHaveBeenCalledTimes(3); // boot, failed, retry
     expect(d.pf.refreshDynamicRules).toHaveBeenLastCalledWith(['b.com'], true);
+    expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the pass and retries pf while pfctl cannot load the rules', async () => {
+    let pfctlFails = false;
+    let pfctlLoads = 0;
+    d.sys.exec = async (cmd, args) => {
+      if (cmd === '/sbin/pfctl' && args[0] === '-f') {
+        pfctlLoads++;
+        if (pfctlFails) throw new Error('pfctl: syntax error');
+      }
+      return { stdout: '', stderr: '' };
+    };
+    d.sys.execSilent = async (cmd, args) => {
+      try { return await d.sys.exec(cmd, args); } catch { return null; }
+    };
+    d.files.set('/etc/pf.conf', '');
+    const r = new Reconciler({
+      sys: d.sys,
+      pf: new PfManager(d.sys, new OperationQueue()),
+      browser: d.browser as never,
+      log: () => {},
+      hostsPath: HOSTS,
+      now: d.now,
+      sleep: async () => {},
+    });
+    r.configPath = CONFIG;
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
+    expect((await r.tick('boot')).converged).toBe(true);
+
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000 }] });
+    pfctlFails = true;
+    const failed = await r.tick('config-change');
+    expect(failed.converged).toBe(false);
+    expect(failed.lastError).toMatch(/pfctl/);
+
+    pfctlFails = false;
+    const loadsBefore = pfctlLoads;
+    const retried = await r.tick('timer');
+    expect(retried.converged).toBe(true);
+    expect(retried.lastError).toBeNull();
+    expect(pfctlLoads).toBeGreaterThan(loadsBefore);
     expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
   });
 
