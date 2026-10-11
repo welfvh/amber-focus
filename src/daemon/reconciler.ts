@@ -12,7 +12,8 @@
  * The diff base is the state the last complete pass applied. A pass that fails
  * partway (after the hosts write, before pf or a side effect) leaves that base
  * as it was, so the next pass retries pf and the side effects. After a daemon
- * restart, the base is read back from the hosts file itself.
+ * restart, the base is read back from the hosts file itself, once, before the
+ * first write.
  *
  * Failure policy: on any error the pass stops, the OS keeps its current state
  * (blocked stays blocked), and `lastError` reports it.
@@ -67,6 +68,12 @@ export class Reconciler {
 
   private chain: Promise<unknown> = Promise.resolve();
   private lastApplied: DesiredState | null = null;
+  /**
+   * The blocked domains in the hosts file before this daemon's first write: the
+   * diff base until a pass completes. Null when the file had no section this
+   * version can read; undefined until the first pass reads it.
+   */
+  private bootDomains: string[] | null | undefined;
   /** Index of the last hosts content seen; rebuilt only when the file changes. */
   private hostsIndex: { content: string; index: HostsIndex } | null = null;
   /** Invalid config entries last reported, so the log names each change once. */
@@ -121,7 +128,9 @@ export class Reconciler {
 
       const before = await this.sys.readFile(this.hostsPath);
       const currentSection = extractManagedSection(before);
-      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : parseManagedDomains(before);
+      // Read once: a retry after a failed first pass would read its own write.
+      if (this.bootDomains === undefined) this.bootDomains = parseManagedDomains(before);
+      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : this.bootDomains;
       const wantedSection = renderHostsSection(desired, new Date(now).toISOString());
       const hostsChanged = !sectionEquivalent(currentSection, wantedSection);
 

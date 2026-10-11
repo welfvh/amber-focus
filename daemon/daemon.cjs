@@ -14411,6 +14411,12 @@ var Reconciler = class {
   sleep;
   chain = Promise.resolve();
   lastApplied = null;
+  /**
+   * The blocked domains in the hosts file before this daemon's first write: the
+   * diff base until a pass completes. Null when the file had no section this
+   * version can read; undefined until the first pass reads it.
+   */
+  bootDomains;
   /** Index of the last hosts content seen; rebuilt only when the file changes. */
   hostsIndex = null;
   /** Invalid config entries last reported, so the log names each change once. */
@@ -14460,7 +14466,8 @@ var Reconciler = class {
       const desired = desiredStateFromConfig(cfg, now);
       const before = await this.sys.readFile(this.hostsPath);
       const currentSection = extractManagedSection(before);
-      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : parseManagedDomains(before);
+      if (this.bootDomains === void 0) this.bootDomains = parseManagedDomains(before);
+      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : this.bootDomains;
       const wantedSection = renderHostsSection(desired, new Date(now).toISOString());
       const hostsChanged = !sectionEquivalent(currentSection, wantedSection);
       if (hostsChanged) {

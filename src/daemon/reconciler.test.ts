@@ -189,6 +189,42 @@ describe('Reconciler', () => {
     expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
   });
 
+  it('keeps the side effects of a failed first pass after a daemon restart', async () => {
+    const restart = () => {
+      const r = new Reconciler({
+        sys: d.sys,
+        pf: d.pf as never,
+        browser: d.browser as never,
+        log: () => {},
+        hostsPath: HOSTS,
+        now: d.now,
+        sleep: async () => {},
+      });
+      r.configPath = CONFIG;
+      return r;
+    };
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
+    await d.r.tick('boot');
+
+    // Granted while the daemon was down: the first pass fails after the hosts write.
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000 }] });
+    const granting = restart();
+    d.pf.refreshDynamicRules.mockRejectedValueOnce(new Error('pf write failed'));
+    expect((await granting.tick('boot')).converged).toBe(false);
+    expect(d.files.get(HOSTS)).not.toContain('0.0.0.0 a.com');
+    expect((await granting.tick('timer')).converged).toBe(true);
+    expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
+
+    // Expired while the daemon was down: same failure, then the retry enforces.
+    d.advance(120_000);
+    const expiring = restart();
+    d.pf.refreshDynamicRules.mockRejectedValueOnce(new Error('pf write failed'));
+    expect((await expiring.tick('boot')).converged).toBe(false);
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
+    expect((await expiring.tick('timer')).converged).toBe(true);
+    expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
+  });
+
   it('keeps the OS untouched and reports the error when config.json is unreadable', async () => {
     d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
     await d.r.tick('boot');
