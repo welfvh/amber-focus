@@ -9,6 +9,7 @@
 import fs from 'fs';
 import {
   grantAllowance,
+  isCurrentAllowance,
   revokeAllowance,
   isDomainBlocked,
   isOnBlocklist,
@@ -181,7 +182,9 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
   const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value);
   const outcome = await applyDesiredState(`grant:${domain.value}`);
   const reloaded = outcome.applied ? await reloadTabs([domain.value]) : { count: 0, errors: [] };
-  const vigilantSessionId = startVigilantForAllowance(allowance);
+  // A later grant or a revoke may have replaced this allowance while it converged.
+  // Monitoring follows the allowance in the store; that request handles its own.
+  const vigilantSessionId = isCurrentAllowance(allowance) ? startVigilantForAllowance(allowance) : null;
   return { ok: true, allowance, outcome, tabsReloaded: reloaded.count, vigilantSessionId };
 }
 

@@ -351,6 +351,14 @@ export function grantAllowance(
   return allowance;
 }
 
+/** True while `allowance` is the one stored for its domain: no later grant or revoke replaced it. */
+export function isCurrentAllowance(allowance: Allowance): boolean {
+  const stored = store.get('allowances', []).find(a => a.domain === allowance.domain);
+  return stored !== undefined &&
+    stored.expiresAt === allowance.expiresAt &&
+    stored.vigilantIntent === allowance.vigilantIntent;
+}
+
 export function revokeAllowance(domain: string): void {
   const normalized = normalizeDomain(domain);
   const allowances = store.get('allowances', []);

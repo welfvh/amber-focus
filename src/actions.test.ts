@@ -131,6 +131,26 @@ describe('grant', () => {
   it('points a subdomain grant at its blocking parent when nothing is locked', async () => {
     expect(await actions.grant({ domain: 'mail.google.com', minutes: 5 })).toMatchObject({ ok: false, status: 400 });
   });
+  it('starts monitoring only for the grant that is current when its pass ends', async () => {
+    let releaseFirst!: (s: DaemonStatus) => void;
+    vi.mocked(reconcile).mockImplementationOnce(() => new Promise(r => { releaseFirst = r; }));
+    const first = actions.grant({ domain: 'vimeo.com', minutes: 10, vigilant: true, intent: 'old intent' });
+    const second = await actions.grant({ domain: 'vimeo.com', minutes: 30, vigilant: true, intent: 'new intent' });
+    releaseFirst(status());
+    expect(second).toMatchObject({ ok: true, vigilantSessionId: 'session' });
+    expect(await first).toMatchObject({ ok: true, vigilantSessionId: null });
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(startSession).toHaveBeenCalledWith('vimeo.com', 'new intent', expect.any(Number), expect.any(Function));
+  });
+  it('starts no monitoring for a grant revoked while it converged', async () => {
+    let release!: (s: DaemonStatus) => void;
+    vi.mocked(reconcile).mockImplementationOnce(() => new Promise(r => { release = r; }));
+    const pending = actions.grant({ domain: 'vimeo.com', minutes: 10, vigilant: true, intent: 'watch the talk' });
+    await actions.revoke('vimeo.com', 'revoke');
+    release(status());
+    expect(await pending).toMatchObject({ ok: true, vigilantSessionId: null });
+    expect(startSession).not.toHaveBeenCalled();
+  });
   it('ignores an intent when monitoring was not asked for', async () => {
     const result = await actions.grant({ domain: 'vimeo.com', minutes: 5, intent: 'not monitored' });
     expect(result).toMatchObject({ ok: true, vigilantSessionId: null });
