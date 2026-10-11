@@ -34,6 +34,25 @@ describe('lockoutCoveredBy', () => {
   });
 });
 
+describe('addHardLockout', () => {
+  it('extends an active lock and never shortens it', () => {
+    store.addHardLockout('lockext.com', '2999-01-01');
+    const shorter = store.addHardLockout('lockext.com', '2998-01-01');
+    expect(store.getHardLockoutUntil('lockext.com')).toBe('2999-01-01');
+    expect(shorter?.until).toBe('2999-01-01');
+    const longer = store.addHardLockout('www.lockext.com', '3000-01-01');
+    expect(store.getHardLockoutUntil('lockext.com')).toBe('3000-01-01');
+    expect(longer?.until).toBe('3000-01-01');
+    expect(store.getHardLockouts().filter(l => l.domain === 'lockext.com')).toHaveLength(1);
+  });
+  it('replaces an expired lock', () => {
+    store.addHardLockout('lockexp.com', '2000-01-01');
+    expect(store.getHardLockoutUntil('lockexp.com')).toBeNull();
+    store.addHardLockout('lockexp.com', '2999-06-01');
+    expect(store.getHardLockoutUntil('lockexp.com')).toBe('2999-06-01');
+  });
+});
+
 describe('blockingParent', () => {
   it('names the blocklist entry that covers a subdomain', () => {
     expect(store.blockingParent('m.youtube.com')).toBe('youtube.com');

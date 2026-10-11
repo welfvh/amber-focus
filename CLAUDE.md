@@ -96,7 +96,7 @@ All on `http://127.0.0.1:8053`, local non-browser clients only (see above).
 | POST | `/api/flush-dns` | Flush the system DNS cache via the daemon |
 | GET | `/api/vigilant/status`, `/api/vigilant/log?count=N` | Vigilant sessions and evaluations |
 | GET | `/api/locks` | Active hard lockouts |
-| POST | `/api/lock` | Add a hard lockout. Body `{"domain","until"}` (future ISO date). There is no remove endpoint: a lock holds until it expires |
+| POST | `/api/lock` | Add or extend a hard lockout. Body `{"domain","until"}` (future ISO date). A lock only grows: the response gives the `until` that holds. There is no remove endpoint: a lock holds until it expires |
 
 ## Grants
 

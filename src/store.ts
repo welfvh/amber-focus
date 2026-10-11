@@ -425,11 +425,21 @@ export function getHardLockouts(): HardLockout[] {
   return store.get('hardLockouts', []);
 }
 
-export function addHardLockout(domain: string, until: string): void {
+/**
+ * Lock a domain until `until`, or extend its lock. A lock only ever grows:
+ * when an existing lock on the domain ends later, it stays. Returns the lock
+ * that holds now.
+ */
+export function addHardLockout(domain: string, until: string): HardLockout {
   const normalized = normalizeDomain(domain);
   const lockouts = store.get('hardLockouts', []);
-  const filtered = lockouts.filter(l => normalizeDomain(l.domain) !== normalized);
-  store.set('hardLockouts', [...filtered, { domain: normalized, until }]);
+  const same = lockouts.filter(l => normalizeDomain(l.domain) === normalized);
+  const latest = same.reduce<HardLockout>(
+    (best, l) => (Date.parse(l.until) > Date.parse(best.until) ? { domain: normalized, until: l.until } : best),
+    { domain: normalized, until },
+  );
+  store.set('hardLockouts', [...lockouts.filter(l => !same.includes(l)), latest]);
+  return latest;
 }
 
 /** Check if a domain is hard-locked (locked and lockout period hasn't expired). */

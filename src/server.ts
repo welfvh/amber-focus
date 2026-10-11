@@ -306,8 +306,8 @@ app.post('/api/lock', (req: Request, res: Response) => {
     res.status(400).json({ error: 'until must be a future ISO date' });
     return;
   }
-  addHardLockout(parsed.value, until);
-  res.json({ success: true, domain: parsed.value, until });
+  const lock = addHardLockout(parsed.value, until);
+  res.json({ success: true, domain: lock.domain, until: lock.until });
 });
 
 // Errors from async routes land here instead of killing the process.
