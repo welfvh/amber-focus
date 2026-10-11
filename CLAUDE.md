@@ -71,6 +71,7 @@ enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlo
 | `src/daemon/pf.ts` | pf anchors: static IP ranges + resolved IPs of priority domains |
 | `src/daemon/browser.ts` | Chromium DNS cache flush (kills the network service; the browser respawns it) |
 | `app/retreat-enforcer.swift` | Retreat mode app enforcer (user LaunchAgent) |
+| `skill/amber-focus.md` | The `/amber-focus` Claude Code skill. `install-services.sh` links it into `~/.claude/commands/` |
 | `bin/focus-grant` | The one command for timed grants: expand brand → TLDs, grant, verify OS truth, open the site |
 | `install.sh` | One-line installer: prerequisites, clone, then `install-services.sh` |
 | `install-services.sh` | Build, choose categories (first install), enable pf, install daemon + server services |
@@ -156,6 +157,10 @@ npm run redeploy                                  # build, restart server + daem
   `# BEGIN FOCUS SHIELD BLOCK` section (2026-02-21, ~124k domains) that no code rewrites.
   It overrides grants for the domains it lists; the daemon reports them in
   `legacyBlockedAllowed`, and `bin/prune-legacy-hosts-entry <domain>` removes one.
+- **Restart after a failed pass.** The diff base lives in memory until a pass completes. If
+  a pass writes hosts, pf then fails, and the daemon restarts before a pass completes, the
+  side effects of that diff (connection kills, Chromium DNS flush) do not run. Hosts and pf
+  still converge; the tab sweep closes tabs on newly blocked domains within 10 s.
 - **launchd "disabled" flag.** A reboot with the daemon marked disabled leaves it unloaded.
   Fix: `sudo launchctl enable system/com.amberfocus.daemon`, then kickstart.
 - **pf must be enabled once:** `install-services.sh` runs `sudo ./enable-pf.sh`. pf rules use `block return` (fast

@@ -38,8 +38,8 @@ cd "$SCRIPT_DIR"
 npm install --silent 2>&1
 
 # --- 3. Build ---
-echo "Building TypeScript..."
-npx tsc 2>&1
+echo "Building server and daemon bundle..."
+npm run build 2>&1
 echo "Build complete."
 
 # --- 4. Config directory ---
@@ -130,7 +130,19 @@ launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist
 echo "Server installed."
 
-# --- 11. Verify ---
+# --- 11. Claude Code skill (/amber-focus) ---
+# A link, so the repo stays the one source. An existing file is kept aside, never overwritten.
+if [ -d "$HOME/.claude" ]; then
+    SKILL_LINK="$HOME/.claude/commands/amber-focus.md"
+    mkdir -p "$HOME/.claude/commands"
+    if [ -e "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then
+        mv "$SKILL_LINK" "$SKILL_LINK.bak-$(date +%Y%m%d%H%M%S)"
+    fi
+    ln -sfn "$SCRIPT_DIR/skill/amber-focus.md" "$SKILL_LINK"
+    echo "Skill linked: /amber-focus"
+fi
+
+# --- 12. Verify ---
 echo ""
 echo "Waiting for server..."
 sleep 3

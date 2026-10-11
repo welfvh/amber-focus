@@ -51,7 +51,12 @@ fi
 # remaining tokens = reason, with --vigilant "intent" pulled out
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vigilant) VIGILANT="true"; INTENT="${2:-}"; shift 2 ;;
+    --vigilant)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "✗ --vigilant needs an intent: --vigilant \"what you will do there\""
+        exit 1
+      fi
+      VIGILANT="true"; INTENT="$2"; shift 2 ;;
     *) REASON="${REASON:+$REASON }$1"; shift ;;
   esac
 done
