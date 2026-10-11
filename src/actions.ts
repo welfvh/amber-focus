@@ -10,6 +10,7 @@ import fs from 'fs';
 import {
   grantAllowance,
   isCurrentAllowance,
+  getActiveAllowances,
   revokeAllowance,
   isDomainBlocked,
   isOnBlocklist,
@@ -179,7 +180,10 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
     return { ok: false, status: 400, error: `${domain.value} is blocked as part of ${parent}; grant ${parent} instead` };
   }
 
-  const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value);
+  // Vigilance sticks: a re-grant without an intent keeps the active grant's intent,
+  // so extending a monitored grant never drops its monitoring.
+  const activeIntent = getActiveAllowances().find(a => a.domain === domain.value)?.vigilantIntent;
+  const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value ?? activeIntent);
   const outcome = await applyDesiredState(`grant:${domain.value}`);
   const reloaded = outcome.applied ? await reloadTabs([domain.value]) : { count: 0, errors: [] };
   // A later grant or a revoke may have replaced this allowance while it converged.

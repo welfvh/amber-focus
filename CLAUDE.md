@@ -164,6 +164,7 @@ npm run redeploy                                  # build, restart server + daem
 ## Vigilant Mode
 
 A grant with `vigilant: true` and an `intent` runs under AI monitoring.
+A re-grant without an intent keeps the active grant's intent, so an extension stays monitored.
 Implementation: `src/vigilant.ts`. API key: Keychain `cc/anthropic` / `api_key`.
 
 ## Runtime Files

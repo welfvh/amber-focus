@@ -151,6 +151,14 @@ describe('grant', () => {
     expect(await pending).toMatchObject({ ok: true, vigilantSessionId: null });
     expect(startSession).not.toHaveBeenCalled();
   });
+  it('keeps monitoring when a vigilant grant is extended without an intent', async () => {
+    await actions.grant({ domain: 'vimeo.com', minutes: 5, vigilant: true, intent: 'watch the talk' });
+    const extended = await actions.grant({ domain: 'vimeo.com', minutes: 30 });
+    expect(extended).toMatchObject({ ok: true, vigilantSessionId: 'session' });
+    expect(startSession).toHaveBeenLastCalledWith('vimeo.com', 'watch the talk', expect.any(Number), expect.any(Function));
+    expect(store.getActiveAllowances().find(a => a.domain === 'vimeo.com')?.vigilantIntent).toBe('watch the talk');
+    await actions.revoke('vimeo.com', 'revoke');
+  });
   it('ignores an intent when monitoring was not asked for', async () => {
     const result = await actions.grant({ domain: 'vimeo.com', minutes: 5, intent: 'not monitored' });
     expect(result).toMatchObject({ ok: true, vigilantSessionId: null });
