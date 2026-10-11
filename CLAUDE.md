@@ -139,9 +139,12 @@ npm run redeploy                                  # build, restart server + daem
 
 ## Known Issues
 
-- **Automation consent.** The tab sweep and vigilant mode need macOS Automation access for
-  `node` → Chrome/Safari/Arc. macOS asks once; until allowed, `/status` shows
+- **Automation consent.** The tab sweep and tab close/reload need macOS Automation access
+  for `node` → Chrome/Safari/Arc. macOS asks once; until allowed, `/status` shows
   `tabSweep.lastError`. A Homebrew node upgrade may ask again.
+- **Screen Recording.** Vigilant mode captures screenshots with `/usr/sbin/screencapture`,
+  which needs Screen Recording access for `node`. Without it, vigilant mode cannot see the
+  screen.
 - **Root runs user-owned files.** The LaunchDaemon runs `/opt/homebrew/bin/node` on
   `~/dev/amber-focus/daemon/daemon.cjs`, both writable by the user. Any process running as
   the user can therefore become root. The fix is a root-owned install, planned together

@@ -33,6 +33,7 @@ You ──Claude Code──> focus-grant ──> Server (127.0.0.1:8053) ──>
 - macOS 14+
 - Node.js 18+ (`brew install node`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
+- Allow **Automation** when macOS asks whether `node` may control your browser (the tab sweep reads and closes tabs)
 
 **For vigilant mode** (AI screenshot monitoring):
 - Anthropic API key stored in macOS Keychain — install [cc-keys](https://github.com/welfvh/cc-keys) then:
@@ -40,7 +41,7 @@ You ──Claude Code──> focus-grant ──> Server (127.0.0.1:8053) ──>
   /cc-keys add anthropic            # register the service
   /cc-keys set anthropic api_key sk-ant-your-key-here
   ```
-- Allow **Automation** when macOS asks whether `node` may control your browser (the tab sweep and vigilant mode read and close tabs)
+- Grant **Screen Recording** to `node` (System Settings > Privacy & Security > Screen Recording): vigilant mode captures screenshots with `screencapture`
 
 ## Install
 
