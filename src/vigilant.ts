@@ -54,7 +54,8 @@ export interface TabVerdict {
 /** What a session needs from the outside world. Tests pass fakes. */
 export interface VigilantDeps {
   listTabs(domains: string[]): Promise<{ tabs: BrowserTab[]; errors: string[] }>;
-  closePages(pages: Page[]): Promise<{ count: number; errors: string[] }>;
+  /** Closes the tabs that still show one of `pages`; `closed` has the page of each tab it closed. */
+  closePages(pages: Page[]): Promise<{ closed: Page[]; errors: string[] }>;
   /** One verdict per tab (at most JUDGE_BATCH), in order. Throws when no verdict could be had. */
   judge(domain: string, intent: string, tabs: { url: string; title: string }[]): Promise<TabVerdict[]>;
   notify(title: string, body: string): void;
@@ -195,13 +196,16 @@ export function createVigilant(deps: VigilantDeps) {
       }
 
       if (toClose.size > 0) {
-        const closed = await deps.closePages([...toClose.values()].map(p => ({ url: p.url, title: p.title })));
+        const result = await deps.closePages([...toClose.values()].map(p => ({ url: p.url, title: p.title })));
         if (!live()) return;
-        if (closed.errors.length > 0) {
-          await fail(s, `could not close off-intent tabs: ${closed.errors.join('; ')}`);
+        if (result.errors.length > 0) {
+          await fail(s, `could not close off-intent tabs: ${result.errors.join('; ')}`);
           return;
         }
-        for (const page of toClose.values()) {
+        // Only a tab this call closed counts a strike: not one that closed or changed after the listing.
+        const closed = new Set(result.closed.map(pageKey));
+        for (const [key, page] of toClose) {
+          if (!closed.has(key)) continue;
           s.strikes++;
           deps.log({ event: 'close', sessionId: s.id, domain: s.domain, url: page.url, title: page.title, reason: page.reason, strike: s.strikes });
           deps.notify(

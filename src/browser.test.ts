@@ -47,12 +47,12 @@ describe('shownPage', () => {
 describe.runIf(process.platform === 'darwin')('JXA script', () => {
   it('compiles and runs in osascript (no browser touched)', () => {
     const out = execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', SCRIPT, JSON.stringify({ op: 'list', browsers: [] })]);
-    expect(JSON.parse(out.toString())).toEqual({ tabs: [], count: 0, errors: [] });
+    expect(JSON.parse(out.toString())).toEqual({ tabs: [], closed: [], count: 0, errors: [] });
   });
   it('runs a closePages request (no browser touched)', () => {
     const req = { op: 'closePages', browsers: [], pages: [{ url: 'https://youtube.com/watch?v=x', title: '"); do shell script "touch /tmp/pwn' }] };
     const out = execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', SCRIPT, JSON.stringify(req)]);
-    expect(JSON.parse(out.toString())).toEqual({ tabs: [], count: 0, errors: [] });
+    expect(JSON.parse(out.toString())).toEqual({ tabs: [], closed: [], count: 0, errors: [] });
   });
   it('runs shownPage in JXA', () => {
     const script = `${shownPage.toString()}\nfunction run(argv) { var r = JSON.parse(argv[0]); return JSON.stringify(shownPage(r.url, function () { return r.title; }, r.pages)); }`;

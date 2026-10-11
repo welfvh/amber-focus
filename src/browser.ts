@@ -66,6 +66,8 @@ export function shownPage(url: string, readTitle: () => string, pages: Page[]): 
 
 interface ScriptResult {
   tabs: BrowserTab[];
+  /** closePages: the page of each tab it closed. */
+  closed: Page[];
   count: number;
   /** One entry per browser that could not be read (Automation denied, timeout, ...). */
   errors: string[];
@@ -82,7 +84,7 @@ function titleOf(t, safari) {
 }
 function run(argv) {
   var req = JSON.parse(argv[0]);
-  var result = { tabs: [], count: 0, errors: [] };
+  var result = { tabs: [], closed: [], count: 0, errors: [] };
   for (var b = 0; b < req.browsers.length; b++) {
     var name = req.browsers[b];
     var app;
@@ -106,8 +108,10 @@ function run(argv) {
           var url = '';
           try { url = t.url() || ''; } catch (e) { continue; }
           var hit;
+          var shown = null;
           if (req.op === 'closePages') {
-            hit = shownPage(url, function () { return titleOf(t, safari); }, req.pages || []) !== null;
+            shown = shownPage(url, function () { return titleOf(t, safari); }, req.pages || []);
+            hit = shown !== null;
           } else {
             var host = hostOf(url);
             hit = host !== null && hostMatches(host, req.domains || []);
@@ -120,6 +124,7 @@ function run(argv) {
             if (req.op === 'close' || req.op === 'closePages') t.close();
             else if (safari) t.url = url; // Safari tabs have no reload verb
             else t.reload();
+            if (shown !== null) result.closed.push(shown);
             result.count++;
           }
         }
@@ -148,7 +153,7 @@ async function runScript(op: Op, domains?: string[], pages?: Page[]): Promise<Sc
     return JSON.parse(stdout) as ScriptResult;
   } catch (err) {
     const message = err instanceof Error ? err.message.split('\n')[0] : String(err);
-    return { tabs: [], count: 0, errors: [`osascript: ${message}`] };
+    return { tabs: [], closed: [], count: 0, errors: [`osascript: ${message}`] };
   }
 }
 
@@ -167,12 +172,12 @@ export async function closeTabs(domains: string[]): Promise<{ count: number; err
 
 /**
  * Close every tab that still shows one of `pages`: the exact URL and title `listTabs` reported.
- * A tab whose title changed since then stays open.
+ * A tab whose title changed since then stays open. `closed` has the page of each tab it closed.
  */
-export async function closePages(pages: Page[]): Promise<{ count: number; errors: string[] }> {
-  if (pages.length === 0) return { count: 0, errors: [] };
-  const { count, errors } = await runScript('closePages', undefined, pages);
-  return { count, errors };
+export async function closePages(pages: Page[]): Promise<{ closed: Page[]; errors: string[] }> {
+  if (pages.length === 0) return { closed: [], errors: [] };
+  const { closed, errors } = await runScript('closePages', undefined, pages);
+  return { closed, errors };
 }
 
 /** Reload every tab on `domains` (after an unblock, so error pages load the site). */

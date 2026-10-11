@@ -33,7 +33,7 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
       const hit = state.tabs.filter(t => pages.some(p => p.url === t.url && p.title === t.title));
       state.closed.push(...hit.map(t => t.url));
       state.tabs = state.tabs.filter(t => !hit.includes(t));
-      return { count: hit.length, errors: [] };
+      return { closed: hit.map(t => ({ url: t.url, title: t.title })), errors: [] };
     },
     judge: async (_d, _i, tabs) => {
       if (state.judgeError) throw new Error(state.judgeError);
@@ -191,6 +191,18 @@ describe('vigilant tick', () => {
     await v.tick(id);
     expect(state.closed).toEqual([]);
     expect(state.tabs).toEqual([tab(url, 'HUF HAUS tour')]);
+    expect(state.notes).toEqual([]);
+    expect(v.status().sessions[0].strikes).toBe(0);
+    v.stop(id);
+  });
+
+  it('counts no strike for a tab that closed while the model judged', async () => {
+    const { v, id, state } = world({});
+    state.tabs = [tab('https://youtube.com/watch?v=cats', 'Funny cats')];
+    state.during.judge = () => { state.tabs = []; };
+    await v.tick(id);
+    expect(state.notes).toEqual([]);
+    expect(v.status().sessions[0].strikes).toBe(0);
     v.stop(id);
   });
 

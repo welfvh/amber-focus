@@ -175,7 +175,7 @@ A re-grant without an intent keeps the active grant's intent, so an extension st
 - Each new URL gets one verdict from Claude Haiku 4.5 (structured output), and a new one when
   its title changes: `on_task`, `navigation` (allowed 2 min per URL), or `off_task`. Titles
   are treated as untrusted data.
-- Off-task tab → closed at once, one strike, notification. 3 strikes → grant revoked.
+- Off-task tab → closed at once, notification, one strike per tab that closed. 3 strikes → grant revoked.
   A verdict covers one URL + title: a tab closes only while it still shows the judged page.
 - Fails closed: 3 ticks in a row without tabs or verdicts → grant revoked.
 - Preflight: a vigilant grant is refused (503) when the API key is missing or tabs cannot
