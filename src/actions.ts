@@ -163,11 +163,7 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
   if (!intent.ok) return { ok: false, status: 400, error: intent.error };
   if (vigilant && !intent.value) return { ok: false, status: 400, error: 'vigilant grants need an intent' };
 
-  const parent = blockingParent(domain.value);
-  if (parent) {
-    return { ok: false, status: 400, error: `${domain.value} is blocked as part of ${parent}; grant ${parent} instead` };
-  }
-
+  // The lock first: pointing at a locked parent would only lead to a second refusal.
   const lock = lockoutCoveredBy(domain.value);
   if (lock) {
     return {
@@ -175,6 +171,11 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
       status: 403,
       error: `REFUSED: ${domain.value} touches ${lock.domain}, HARD LOCKED until ${lock.until}. No exceptions.`,
     };
+  }
+
+  const parent = blockingParent(domain.value);
+  if (parent) {
+    return { ok: false, status: 400, error: `${domain.value} is blocked as part of ${parent}; grant ${parent} instead` };
   }
 
   const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value);

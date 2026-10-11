@@ -123,6 +123,14 @@ describe('grant', () => {
     expect(result).toMatchObject({ ok: true, vigilantSessionId: 'session' });
     expect(startSession).toHaveBeenCalledWith('vimeo.com', 'watch the talk', expect.any(Number), expect.any(Function));
   });
+  it('reports the hard lock first when the blocking parent is also locked', async () => {
+    const result = await actions.grant({ domain: 'old.reddit.com', minutes: 5 });
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(await actions.grant({ domain: 'reddit.com', minutes: 5 })).toMatchObject({ ok: false, status: 403 });
+  });
+  it('points a subdomain grant at its blocking parent when nothing is locked', async () => {
+    expect(await actions.grant({ domain: 'mail.google.com', minutes: 5 })).toMatchObject({ ok: false, status: 400 });
+  });
   it('ignores an intent when monitoring was not asked for', async () => {
     const result = await actions.grant({ domain: 'vimeo.com', minutes: 5, intent: 'not monitored' });
     expect(result).toMatchObject({ ok: true, vigilantSessionId: null });
