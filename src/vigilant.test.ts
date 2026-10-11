@@ -28,11 +28,12 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
       state.during.list?.();
       return { tabs: state.tabs, errors: state.listErrors };
     },
-    closeUrls: async (urls) => {
+    closePages: async (pages) => {
       state.during.close?.();
-      state.closed.push(...urls);
-      state.tabs = state.tabs.filter(t => !urls.includes(t.url));
-      return { count: urls.length, errors: [] };
+      const hit = state.tabs.filter(t => pages.some(p => p.url === t.url && p.title === t.title));
+      state.closed.push(...hit.map(t => t.url));
+      state.tabs = state.tabs.filter(t => !hit.includes(t));
+      return { count: hit.length, errors: [] };
     },
     judge: async (_d, _i, tabs) => {
       if (state.judgeError) throw new Error(state.judgeError);
@@ -126,12 +127,13 @@ describe('vigilant tick', () => {
     v.stop(id);
   });
 
-  it('closes a URL when any of its tabs shows an off-task title', async () => {
+  it('closes only the tabs whose own page is off-task', async () => {
     const url = 'https://youtube.com/watch?v=cats';
     const { v, id, state } = world({ 'HUF HAUS tour': 'on_task' });
     state.tabs = [tab(url, 'Funny cats'), tab(url, 'HUF HAUS tour')];
     await v.tick(id);
     expect(state.closed).toEqual([url]);
+    expect(state.tabs).toEqual([tab(url, 'HUF HAUS tour')]);
     expect(v.status().sessions[0].strikes).toBe(1);
     v.stop(id);
   });
@@ -176,6 +178,19 @@ describe('vigilant tick', () => {
     await v.tick(id);
     expect(state.judged).toEqual(urls);
     expect(v.status().sessions[0].consecutiveFailures).toBe(0);
+    v.stop(id);
+  });
+
+  it('closes no tab whose title changed while the model judged', async () => {
+    const url = 'https://youtube.com/watch?v=huf';
+    const { v, id, state } = world({ 'HUF HAUS tour': 'on_task' });
+    state.tabs = [tab(url, 'Funny cats')]; // the previous video's title, still shown
+    state.during.judge = () => { state.tabs = [tab(url, 'HUF HAUS tour')]; };
+    await v.tick(id);
+    state.during.judge = undefined;
+    await v.tick(id);
+    expect(state.closed).toEqual([]);
+    expect(state.tabs).toEqual([tab(url, 'HUF HAUS tour')]);
     v.stop(id);
   });
 

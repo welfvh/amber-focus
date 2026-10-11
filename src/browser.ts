@@ -47,6 +47,23 @@ export interface BrowserTab {
   browserFrontmost: boolean;
 }
 
+/** What a tab shows: its URL and title. */
+export type Page = Pick<BrowserTab, 'url' | 'title'>;
+
+/**
+ * The entry of `pages` that a tab on `url` shows, or null. `readTitle` runs at most once,
+ * and only for a listed URL: each title read is one Apple event. Also runs inside JXA.
+ */
+export function shownPage(url: string, readTitle: () => string, pages: Page[]): Page | null {
+  let title: string | null = null;
+  for (const p of pages) {
+    if (p.url !== url) continue;
+    if (title === null) title = readTitle();
+    if (p.title === title) return p;
+  }
+  return null;
+}
+
 interface ScriptResult {
   tabs: BrowserTab[];
   count: number;
@@ -54,11 +71,15 @@ interface ScriptResult {
   errors: string[];
 }
 
-type Op = 'list' | 'close' | 'reload' | 'closeUrls';
+type Op = 'list' | 'close' | 'reload' | 'closePages';
 
 export const SCRIPT = `
 ${hostOf.toString()}
 ${hostMatches.toString()}
+${shownPage.toString()}
+function titleOf(t, safari) {
+  try { return (safari ? t.name() : t.title()) || ''; } catch (e) { return ''; }
+}
 function run(argv) {
   var req = JSON.parse(argv[0]);
   var result = { tabs: [], count: 0, errors: [] };
@@ -84,18 +105,19 @@ function run(argv) {
           var t = tabs[ti];
           var url = '';
           try { url = t.url() || ''; } catch (e) { continue; }
-          var host = hostOf(url);
-          var hit = req.op === 'closeUrls'
-            ? (req.urls || []).indexOf(url) !== -1
-            : host !== null && hostMatches(host, req.domains || []);
+          var hit;
+          if (req.op === 'closePages') {
+            hit = shownPage(url, function () { return titleOf(t, safari); }, req.pages || []) !== null;
+          } else {
+            var host = hostOf(url);
+            hit = host !== null && hostMatches(host, req.domains || []);
+          }
           if (req.op === 'list') {
             if (req.domains && !hit) continue;
-            var title = '';
-            try { title = (safari ? t.name() : t.title()) || ''; } catch (e) {}
-            result.tabs.push({ browser: name, url: url, title: title, active: ti === activeIndex,
+            result.tabs.push({ browser: name, url: url, title: titleOf(t, safari), active: ti === activeIndex,
               frontWindow: wi === 0, browserFrontmost: frontmost });
           } else if (hit) {
-            if (req.op === 'close' || req.op === 'closeUrls') t.close();
+            if (req.op === 'close' || req.op === 'closePages') t.close();
             else if (safari) t.url = url; // Safari tabs have no reload verb
             else t.reload();
             result.count++;
@@ -110,12 +132,12 @@ function run(argv) {
 }
 `;
 
-async function runScript(op: Op, domains?: string[], urls?: string[]): Promise<ScriptResult> {
+async function runScript(op: Op, domains?: string[], pages?: Page[]): Promise<ScriptResult> {
   const req = {
     op,
     browsers: BROWSERS,
     ...(domains ? { domains: domains.filter(isValidHostname) } : {}),
-    ...(urls ? { urls: urls.filter(u => hostOf(u) !== null) } : {}),
+    ...(pages ? { pages: pages.filter(p => hostOf(p.url) !== null).map(p => ({ url: p.url, title: p.title })) } : {}),
   };
   try {
     const { stdout } = await execFileAsync(
@@ -143,10 +165,13 @@ export async function closeTabs(domains: string[]): Promise<{ count: number; err
   return { count, errors };
 }
 
-/** Close every tab whose URL is exactly one of `urls` (as `listTabs` reported them). */
-export async function closeUrls(urls: string[]): Promise<{ count: number; errors: string[] }> {
-  if (urls.length === 0) return { count: 0, errors: [] };
-  const { count, errors } = await runScript('closeUrls', undefined, urls);
+/**
+ * Close every tab that still shows one of `pages`: the exact URL and title `listTabs` reported.
+ * A tab whose title changed since then stays open.
+ */
+export async function closePages(pages: Page[]): Promise<{ count: number; errors: string[] }> {
+  if (pages.length === 0) return { count: 0, errors: [] };
+  const { count, errors } = await runScript('closePages', undefined, pages);
   return { count, errors };
 }
 

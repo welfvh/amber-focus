@@ -9,6 +9,10 @@
  *   then handled as off_task (a home feed must not become the session).
  * - off_task: the tab closes at once and the session takes a strike.
  *
+ * A verdict covers one page (URL + title). A tab closes only while it still
+ * shows the judged page, so a title that changes during judging gets its own
+ * verdict first.
+ *
  * MAX_STRIKES strikes end the grant. Monitoring fails closed: MAX_FAILURES
  * ticks in a row that cannot read the tabs or get verdicts end the grant too.
  * Every verdict and action goes to vigilant-log.jsonl (append-only).
@@ -22,7 +26,7 @@ import { randomUUID } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
-import { listTabs, closeUrls, type BrowserTab } from './browser.js';
+import { listTabs, closePages, type BrowserTab, type Page } from './browser.js';
 import { notify } from './notify.js';
 
 const execFileAsync = promisify(execFile);
@@ -50,7 +54,7 @@ export interface TabVerdict {
 /** What a session needs from the outside world. Tests pass fakes. */
 export interface VigilantDeps {
   listTabs(domains: string[]): Promise<{ tabs: BrowserTab[]; errors: string[] }>;
-  closeUrls(urls: string[]): Promise<{ count: number; errors: string[] }>;
+  closePages(pages: Page[]): Promise<{ count: number; errors: string[] }>;
   /** One verdict per tab (at most JUDGE_BATCH), in order. Throws when no verdict could be had. */
   judge(domain: string, intent: string, tabs: { url: string; title: string }[]): Promise<TabVerdict[]>;
   notify(title: string, body: string): void;
@@ -67,8 +71,6 @@ interface PageState extends TabVerdict {
 function pageKey(t: { url: string; title: string }): string {
   return JSON.stringify([t.url, t.title]);
 }
-
-const SEVERITY: Record<Verdict, number> = { on_task: 0, navigation: 1, off_task: 2 };
 
 interface Session {
   id: string;
@@ -177,40 +179,34 @@ export function createVigilant(deps: VigilantDeps) {
         });
       }
 
-      // Tabs close by URL, so each URL gets the strictest verdict among its open pages.
-      const byUrl = new Map<string, PageState>();
-      for (const t of tabs) {
-        const page = s.pages.get(pageKey(t))!;
-        const prev = byUrl.get(t.url);
-        if (!prev || SEVERITY[page.verdict] > SEVERITY[prev.verdict]) byUrl.set(t.url, page);
-      }
+      // The navigation clock runs per URL, so a title change does not reset it.
+      const navUrls = new Set(tabs.filter(t => s.pages.get(pageKey(t))!.verdict === 'navigation').map(t => t.url));
+      for (const url of navUrls) s.navMs.set(url, (s.navMs.get(url) ?? 0) + elapsed);
 
       const toClose = new Map<string, PageState>();
-      for (const [url, state] of byUrl) {
-        if (state.verdict === 'navigation') {
-          const navMs = (s.navMs.get(url) ?? 0) + elapsed;
-          s.navMs.set(url, navMs);
-          if (navMs >= NAV_LIMIT_MS) {
-            state.verdict = 'off_task';
-            state.reason = `navigation page open for ${Math.round(navMs / 60_000)} min`;
-          }
+      for (const t of tabs) {
+        const page = s.pages.get(pageKey(t))!;
+        const navMs = s.navMs.get(t.url) ?? 0;
+        if (page.verdict === 'navigation' && navMs >= NAV_LIMIT_MS) {
+          page.verdict = 'off_task';
+          page.reason = `navigation page open for ${Math.round(navMs / 60_000)} min`;
         }
-        if (state.verdict === 'off_task') toClose.set(url, state);
+        if (page.verdict === 'off_task') toClose.set(pageKey(t), page);
       }
 
       if (toClose.size > 0) {
-        const closed = await deps.closeUrls([...toClose.keys()]);
+        const closed = await deps.closePages([...toClose.values()].map(p => ({ url: p.url, title: p.title })));
         if (!live()) return;
         if (closed.errors.length > 0) {
           await fail(s, `could not close off-intent tabs: ${closed.errors.join('; ')}`);
           return;
         }
-        for (const [url, state] of toClose) {
+        for (const page of toClose.values()) {
           s.strikes++;
-          deps.log({ event: 'close', sessionId: s.id, domain: s.domain, url, title: state.title, reason: state.reason, strike: s.strikes });
+          deps.log({ event: 'close', sessionId: s.id, domain: s.domain, url: page.url, title: page.title, reason: page.reason, strike: s.strikes });
           deps.notify(
             `Closed off-intent tab (${s.strikes}/${MAX_STRIKES})`,
-            `${state.title || url} — ${state.reason}`,
+            `${page.title || page.url} — ${page.reason}`,
           );
         }
         if (s.strikes >= MAX_STRIKES) {
@@ -369,7 +365,7 @@ function appendLog(entry: Record<string, unknown>): void {
 
 const vigilant = createVigilant({
   listTabs,
-  closeUrls,
+  closePages,
   judge: judgeWithClaude,
   notify,
   log: appendLog,
