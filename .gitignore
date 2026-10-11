@@ -3,6 +3,7 @@ dist/
 *.log
 .DS_Store
 app/retreat-enforcer
+app/retreat-enforcer.new
 !app/retreat-enforcer.swift
 
 # Generated plists (use .plist.template as source)
