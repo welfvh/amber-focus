@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Remove a domain from the legacy FOCUS SHIELD BLOCK in /etc/hosts.
+
+The current daemon owns the "# BEGIN AMBER FOCUS BLOCK" section and rewrites it
+on every change. An older section, "# BEGIN FOCUS SHIELD BLOCK", is still in
+/etc/hosts and nothing rewrites it. Entries there keep a domain blocked even
+after the API reports blocked:false. This tool removes those stale entries.
+
+Usage:
+    sudo prune-legacy-hosts-entry <domain> [<domain> ...]
+    sudo prune-legacy-hosts-entry --dry-run <domain>
+
+It backs up /etc/hosts before writing and prints every line it changes.
+It touches ONLY the legacy section. The live AMBER FOCUS block stays untouched.
+"""
+
+import os
+import shutil
+import sys
+import time
+
+HOSTS = "/etc/hosts"
+BEGIN = "# BEGIN FOCUS SHIELD BLOCK"
+END = "# END FOCUS SHIELD BLOCK"
+SINKS = {"0.0.0.0", "127.0.0.1", "::", "::1"}
+
+
+def main(argv):
+    dry_run = "--dry-run" in argv
+    domains = [a.lower() for a in argv if not a.startswith("--")]
+    if not domains:
+        print(__doc__)
+        return 2
+
+    targets = set()
+    for d in domains:
+        targets.add(d)
+        targets.add("www." + d)
+
+    with open(HOSTS, "r") as f:
+        lines = f.read().splitlines(keepends=True)
+
+    try:
+        start = next(i for i, l in enumerate(lines) if l.startswith(BEGIN))
+        stop = next(i for i, l in enumerate(lines) if l.startswith(END))
+    except StopIteration:
+        print(f"No legacy section ({BEGIN}) in {HOSTS}. Nothing to do.")
+        return 0
+
+    out, changed = [], []
+    for i, line in enumerate(lines):
+        if not (start < i < stop):
+            out.append(line)
+            continue
+
+        parts = line.split()
+        if len(parts) < 2 or parts[0] not in SINKS:
+            out.append(line)
+            continue
+
+        kept = [h for h in parts[1:] if h.lower() not in targets]
+        if len(kept) == len(parts) - 1:
+            out.append(line)
+            continue
+
+        changed.append(line.rstrip("\n"))
+        if kept:  # line listed other hosts too — keep them
+            out.append(parts[0] + " " + " ".join(kept) + "\n")
+
+    if not changed:
+        print(f"No legacy entries for: {', '.join(domains)}")
+        return 0
+
+    print(f"Removing {len(changed)} legacy line(s):")
+    for line in changed:
+        print("  " + line)
+
+    if dry_run:
+        print("\n--dry-run: /etc/hosts not modified.")
+        return 0
+
+    backup = f"{HOSTS}.amber-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(HOSTS, backup)
+
+    tmp = HOSTS + ".amber-tmp"
+    with open(tmp, "w") as f:
+        f.write("".join(out))
+    shutil.copymode(HOSTS, tmp)
+    os.replace(tmp, HOSTS)
+
+    print(f"\nBackup: {backup}")
+    print(f"Wrote:  {HOSTS}")
+    print("Now run: curl -X POST localhost:8053/api/flush-dns")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
