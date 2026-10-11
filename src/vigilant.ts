@@ -37,6 +37,8 @@ const FIRST_TICK_MS = 5_000;
 export const NAV_LIMIT_MS = 2 * 60_000;
 export const MAX_STRIKES = 3;
 export const MAX_FAILURES = 3;
+/** Most tabs per model call, so its verdicts always fit in max_tokens. */
+export const JUDGE_BATCH = 10;
 
 export type Verdict = 'on_task' | 'navigation' | 'off_task';
 
@@ -49,7 +51,7 @@ export interface TabVerdict {
 export interface VigilantDeps {
   listTabs(domains: string[]): Promise<{ tabs: BrowserTab[]; errors: string[] }>;
   closeUrls(urls: string[]): Promise<{ count: number; errors: string[] }>;
-  /** One verdict per tab, in order. Throws when no verdict could be had. */
+  /** One verdict per tab (at most JUDGE_BATCH), in order. Throws when no verdict could be had. */
   judge(domain: string, intent: string, tabs: { url: string; title: string }[]): Promise<TabVerdict[]>;
   notify(title: string, body: string): void;
   log(entry: Record<string, unknown>): void;
@@ -158,16 +160,18 @@ export function createVigilant(deps: VigilantDeps) {
       }
 
       const fresh = [...new Map(tabs.filter(t => !s.pages.has(pageKey(t))).map(t => [pageKey(t), t])).values()];
-      if (fresh.length > 0) {
+      // Each batch is cached as it arrives: a failed batch does not discard the others.
+      for (let start = 0; start < fresh.length; start += JUDGE_BATCH) {
+        const batch = fresh.slice(start, start + JUDGE_BATCH);
         let verdicts: TabVerdict[];
         try {
-          verdicts = await deps.judge(s.domain, s.intent, fresh.map(t => ({ url: t.url, title: t.title })));
+          verdicts = await deps.judge(s.domain, s.intent, batch.map(t => ({ url: t.url, title: t.title })));
         } catch (err) {
           if (live()) await fail(s, err instanceof Error ? err.message : String(err));
           return;
         }
         if (!live()) return;
-        fresh.forEach((t, i) => {
+        batch.forEach((t, i) => {
           s.pages.set(pageKey(t), { ...verdicts[i], url: t.url, title: t.title });
           deps.log({ event: 'verdict', sessionId: s.id, domain: s.domain, url: t.url, title: t.title, ...verdicts[i] });
         });

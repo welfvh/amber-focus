@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createVigilant, MAX_FAILURES, NAV_LIMIT_MS, TICK_MS, type TabVerdict, type VigilantDeps } from './vigilant.js';
+import { createVigilant, JUDGE_BATCH, MAX_FAILURES, NAV_LIMIT_MS, TICK_MS, type TabVerdict, type VigilantDeps } from './vigilant.js';
 import type { BrowserTab } from './browser.js';
 
 function tab(url: string, title = url): BrowserTab {
@@ -13,6 +13,9 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
     tabs: [] as BrowserTab[],
     listErrors: [] as string[],
     judgeError: null as string | null,
+    /** Most tabs one fake model call can answer; more stand in for truncated output. */
+    judgeCapacity: Infinity,
+    batches: [] as number[],
     judged: [] as string[],
     closed: [] as string[],
     notes: [] as string[],
@@ -33,6 +36,8 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
     },
     judge: async (_d, _i, tabs) => {
       if (state.judgeError) throw new Error(state.judgeError);
+      if (tabs.length > state.judgeCapacity) throw new Error('Failed to parse structured output: truncated');
+      state.batches.push(tabs.length);
       state.judged.push(...tabs.map(t => t.url));
       state.during.judge?.();
       return tabs.map(t => ({ verdict: verdicts[t.title] ?? verdicts[t.url] ?? 'off_task', reason: 'test' }));
@@ -142,6 +147,35 @@ describe('vigilant tick', () => {
       await v.tick(id);
     }
     expect(state.closed).toEqual(['https://youtube.com/']);
+    v.stop(id);
+  });
+
+  it('judges many tabs in batches that fit one model reply', async () => {
+    const urls = Array.from({ length: 25 }, (_, n) => `https://youtube.com/watch?v=huf${n}`);
+    const { v, id, state } = world(Object.fromEntries(urls.map(u => [u, 'on_task' as const])));
+    state.judgeCapacity = 10;
+    state.tabs = urls.map(u => tab(u));
+    for (let i = 0; i < MAX_FAILURES; i++) await v.tick(id);
+    expect(state.ended).toEqual([]);
+    expect(state.judged).toEqual(urls);
+    expect(Math.max(...state.batches)).toBeLessThanOrEqual(JUDGE_BATCH);
+    expect(v.status().sessions[0].consecutiveFailures).toBe(0);
+    v.stop(id);
+  });
+
+  it('keeps the verdicts of earlier batches when a later batch fails', async () => {
+    const urls = Array.from({ length: 15 }, (_, n) => `https://youtube.com/watch?v=huf${n}`);
+    const { v, id, state } = world(Object.fromEntries(urls.map(u => [u, 'on_task' as const])));
+    state.tabs = urls.map(u => tab(u));
+    state.during.judge = () => { state.judgeError = 'Anthropic API error 529: overloaded'; };
+    await v.tick(id);
+    expect(state.judged).toHaveLength(JUDGE_BATCH);
+    expect(v.status().sessions[0].consecutiveFailures).toBe(1);
+    state.during.judge = undefined;
+    state.judgeError = null;
+    await v.tick(id);
+    expect(state.judged).toEqual(urls);
+    expect(v.status().sessions[0].consecutiveFailures).toBe(0);
     v.stop(id);
   });
 
