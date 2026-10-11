@@ -27,7 +27,7 @@ import { closeTabs, reloadTabs } from './browser.js';
 import { buildHostsIndex, type HostsBlockSource, type HostsIndex } from './shared/reconcile.js';
 import { parseDomain, parseMinutes, parseText, type Parsed } from './policy.js';
 import type { DaemonStatus } from './shared/ipc-types.js';
-import { startSession as startVigilantSession, stopSessionsForDomain } from './vigilant.js';
+import { startSession as startVigilantSession, stopSessionsForDomain, preflight as vigilantPreflight } from './vigilant.js';
 
 const HOSTS_PATH = '/etc/hosts';
 /** A pass older than this means the daemon loop is not running. */
@@ -147,9 +147,12 @@ export interface GrantRequest {
 
 export type GrantResult =
   | { ok: true; allowance: Allowance; outcome: ApplyOutcome; tabsReloaded: number; vigilantSessionId: string | null }
-  | { ok: false; status: 400 | 403; error: string };
+  | { ok: false; status: 400 | 403 | 503; error: string };
 
-/** The one grant path: validate, check locks, save, converge, reload tabs, start monitoring. */
+/**
+ * The one grant path: validate, check locks, check that vigilant monitoring
+ * can run, save, converge, reload tabs, start monitoring.
+ */
 export async function grant(req: GrantRequest): Promise<GrantResult> {
   const domain = parseDomain(req.domain);
   if (!domain.ok) return { ok: false, status: 400, error: domain.error };
@@ -183,7 +186,13 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
   // Vigilance sticks: a re-grant without an intent keeps the active grant's intent,
   // so extending a monitored grant never drops its monitoring.
   const activeIntent = getActiveAllowances().find(a => a.domain === domain.value)?.vigilantIntent;
-  const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value ?? activeIntent);
+  const vigilantIntent = intent.value ?? activeIntent;
+  if (vigilantIntent) {
+    const blocker = await vigilantPreflight(domain.value);
+    if (blocker) return { ok: false, status: 503, error: `vigilant monitoring unavailable: ${blocker}. No grant made.` };
+  }
+
+  const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', vigilantIntent);
   const outcome = await applyDesiredState(`grant:${domain.value}`);
   const reloaded = outcome.applied ? await reloadTabs([domain.value]) : { count: 0, errors: [] };
   // A later grant or a revoke may have replaced this allowance while it converged.
@@ -201,11 +210,6 @@ export async function revoke(domain: string, reason: string): Promise<ApplyOutco
   return outcome;
 }
 
-/** Vigilant drift: revoke the grant and converge. */
-export async function handleVigilantViolation(domain: string): Promise<void> {
-  console.log(`[vigilant] Violation for ${domain} — revoking grant`);
-  await revoke(domain, 'vigilant-violation');
-}
 
 /** Start (or resume after a restart) vigilant monitoring for an allowance that carries an intent. */
 export function startVigilantForAllowance(allowance: Allowance): string | null {
@@ -215,7 +219,7 @@ export function startVigilantForAllowance(allowance: Allowance): string | null {
       allowance.domain,
       allowance.vigilantIntent,
       allowance.expiresAt,
-      () => handleVigilantViolation(allowance.domain),
+      async () => { await revoke(allowance.domain, 'vigilant'); },
     );
     console.log(`[vigilant] Session ${id} for ${allowance.domain}`);
     return id;

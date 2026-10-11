@@ -275,7 +275,7 @@ app.get('/api/vigilant/status', (_req: Request, res: Response) => {
 
 app.get('/api/vigilant/log', (req: Request, res: Response) => {
   const count = Math.min(parseInt(req.query.count as string) || 20, 200);
-  res.json({ evaluations: getVigilantLog(count) });
+  res.json({ entries: getVigilantLog(count) });
 });
 
 // === Hard lockouts: added here, never removed before they expire ===

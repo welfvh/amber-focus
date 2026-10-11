@@ -95,7 +95,7 @@ All on `http://127.0.0.1:8053`, local non-browser clients only (see above).
 | POST | `/api/reconcile` | One reconcile pass now. 503 when the daemon is unreachable |
 | GET/POST/DELETE | `/api/retreat` | Retreat config. POST body `{"endDate":"YYYY-MM-DD","windows":[{"start":960,"end":1080}],"allowlist":["bundle.id"],"blocklist"?:[...]}` (minutes from midnight; `end < start` wraps midnight). POST replaces the whole config |
 | POST | `/api/flush-dns` | Flush the system DNS cache via the daemon |
-| GET | `/api/vigilant/status`, `/api/vigilant/log?count=N` | Vigilant sessions and evaluations |
+| GET | `/api/vigilant/status`, `/api/vigilant/log?count=N` | Vigilant sessions (strikes, failures, judged URLs) and the log |
 | GET | `/api/locks` | Active hard lockouts |
 | POST | `/api/lock` | Add or extend a hard lockout. Body `{"domain","until"}` (future ISO date). A lock only grows: the response gives the `until` that holds. There is no remove endpoint: a lock holds until it expires |
 
@@ -140,12 +140,9 @@ npm run redeploy                                  # build, restart server + daem
 
 ## Known Issues
 
-- **Automation consent.** The tab sweep and tab close/reload need macOS Automation access
-  for `node` → Chrome/Safari/Arc. macOS asks once; until allowed, `/status` shows
+- **Automation consent.** The tab sweep, tab close/reload and vigilant mode need macOS
+  Automation access for `node` → Chrome/Safari/Arc. macOS asks once; until allowed, `/status` shows
   `tabSweep.lastError`. A Homebrew node upgrade may ask again.
-- **Screen Recording.** Vigilant mode captures screenshots with `/usr/sbin/screencapture`,
-  which needs Screen Recording access for `node`. Without it, vigilant mode cannot see the
-  screen.
 - **Root runs user-owned files.** The LaunchDaemon runs `/opt/homebrew/bin/node` on
   `~/dev/amber-focus/daemon/daemon.cjs`, both writable by the user. Any process running as
   the user can therefore become root. The fix is a root-owned install, planned together
@@ -168,9 +165,24 @@ npm run redeploy                                  # build, restart server + daem
 
 ## Vigilant Mode
 
-A grant with `vigilant: true` and an `intent` runs under AI monitoring.
+A grant with `vigilant: true` and an `intent` runs under AI monitoring (`src/vigilant.ts`).
 A re-grant without an intent keeps the active grant's intent, so an extension stays monitored.
-Implementation: `src/vigilant.ts`. API key: Keychain `cc/anthropic` / `api_key`.
+
+- Every 15 s: read the tabs on the granted domain (`browser.ts`, URL + title).
+- Each new URL gets one verdict from Claude Haiku 4.5 (structured output), and a new one when
+  its title changes: `on_task`, `navigation` (allowed 2 min per URL), or `off_task`. Titles
+  are treated as untrusted data.
+- Off-task page → its tabs close at once, notification, one strike per page that closed (the same
+  page in several tabs counts once). 3 strikes → grant revoked.
+  A verdict covers one URL + title: a tab closes only while it still shows the judged page.
+- Fails closed: 3 ticks in a row without tabs or verdicts → grant revoked.
+- Preflight: a vigilant grant is refused (503) when the API key is missing or tabs cannot
+  be read. Sessions resume after a server restart (`vigilantIntent` on the allowance);
+  strikes restart at zero.
+- `createVigilant(deps)` takes its I/O as dependencies; `vigilant.test.ts` drives ticks
+  with fakes.
+
+API key: Keychain `cc/anthropic` / `api_key`.
 
 ## Runtime Files
 
@@ -178,6 +190,6 @@ Implementation: `src/vigilant.ts`. API key: Keychain `cc/anthropic` / `api_key`.
 |------|---------|
 | `~/.config/amber-focus/config.json` | All state |
 | `~/.config/amber-focus/server.log` | Server log |
-| `~/.config/amber-focus/vigilant-log.json` | Vigilant evaluations |
+| `~/.config/amber-focus/vigilant-log.jsonl` | Vigilant verdicts, closed tabs, failures (append-only, rotates at 5 MB) |
 | `/var/log/amber-focus-daemon.log` | Daemon log |
 | `/tmp/amberfocus.sock` | Server ↔ daemon IPC |

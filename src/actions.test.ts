@@ -9,7 +9,11 @@ vi.mock('./browser.js', () => ({
   closeTabs: vi.fn(async () => ({ count: 0, errors: [] })),
   reloadTabs: vi.fn(async () => ({ count: 0, errors: [] })),
 }));
-vi.mock('./vigilant.js', () => ({ startSession: vi.fn(() => 'session'), stopSessionsForDomain: vi.fn() }));
+vi.mock('./vigilant.js', () => ({
+  startSession: vi.fn(() => 'session'),
+  stopSessionsForDomain: vi.fn(),
+  preflight: vi.fn(async () => null),
+}));
 
 import { reconcile } from './daemon-client.js';
 import { startSession } from './vigilant.js';
@@ -146,6 +150,7 @@ describe('grant', () => {
     let release!: (s: DaemonStatus) => void;
     vi.mocked(reconcile).mockImplementationOnce(() => new Promise(r => { release = r; }));
     const pending = actions.grant({ domain: 'vimeo.com', minutes: 10, vigilant: true, intent: 'watch the talk' });
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1)); // past the preflight, inside its pass
     await actions.revoke('vimeo.com', 'revoke');
     release(status());
     expect(await pending).toMatchObject({ ok: true, vigilantSessionId: null });
