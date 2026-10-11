@@ -21,8 +21,10 @@
 import Cocoa
 import Foundation
 
-let CONFIG_PATH = ProcessInfo.processInfo.environment["AMBER_FOCUS_CONFIG"]
-    ?? NSString(string: "~/.config/amber-focus/config.json").expandingTildeInPath
+// Absolute path, so a relative AMBER_FOCUS_CONFIG still gives a usable log directory.
+let CONFIG_PATH = URL(fileURLWithPath: NSString(string:
+    ProcessInfo.processInfo.environment["AMBER_FOCUS_CONFIG"] ?? "~/.config/amber-focus/config.json"
+).expandingTildeInPath).absoluteURL.standardizedFileURL.path
 let LOG_PATH = (CONFIG_PATH as NSString).deletingLastPathComponent + "/retreat-enforcer.log"
 
 /// Seconds between repeated quit requests to an app that is still running.
