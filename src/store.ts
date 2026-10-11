@@ -288,17 +288,22 @@ export function isOnBlocklist(domain: string): boolean {
   return store.get('blockedDomains', []).some(b => matchesDomain(normalized, b));
 }
 
-/** Desired state for one domain: on the blocklist and not covered by an active allowance. */
+/** Desired state for one domain: covered by an entry of the effective blocklist (the daemon's view). */
 export function isDomainBlocked(domain: string): boolean {
   const normalized = normalizeDomain(domain);
-  if (!isOnBlocklist(normalized)) return false;
+  const effective = effectiveBlockedDomains(store.get('blockedDomains', []), store.get('allowances', []), Date.now());
+  return effective.some(b => matchesDomain(normalized, b));
+}
 
-  const allowances = store.get('allowances', []);
-  const now = Date.now();
-  const hasAllowance = allowances.some(
-    a => matchesDomain(normalized, a.domain) && a.expiresAt > now
-  );
-  return !hasAllowance;
+/**
+ * The blocklist entry that blocks `domain` as one of its subdomains, if any.
+ * A grant cannot open such a domain: the parent's block covers it.
+ */
+export function blockingParent(domain: string): string | null {
+  const normalized = normalizeDomain(domain);
+  return store.get('blockedDomains', [])
+    .map(normalizeDomain)
+    .find(b => normalized.endsWith('.' + b)) ?? null;
 }
 
 export function grantAllowance(

@@ -34,6 +34,29 @@ describe('lockoutCoveredBy', () => {
   });
 });
 
+describe('blockingParent', () => {
+  it('names the blocklist entry that covers a subdomain', () => {
+    expect(store.blockingParent('m.youtube.com')).toBe('youtube.com');
+    expect(store.blockingParent('a.news.google.com')).toBe('news.google.com');
+  });
+  it('is null for a listed domain itself and for unrelated domains', () => {
+    expect(store.blockingParent('youtube.com')).toBeNull();
+    expect(store.blockingParent('google.com')).toBeNull();
+    expect(store.blockingParent('notyoutube.com')).toBeNull();
+  });
+});
+
+describe('isDomainBlocked', () => {
+  it('matches the daemon: an allowance on a subdomain does not open it while the parent is blocked', () => {
+    expect(store.isDomainBlocked('m.youtube.com')).toBe(true);
+    store.grantAllowance('m.youtube.com', 5, 'test');
+    expect(store.isDomainBlocked('m.youtube.com')).toBe(true);
+    store.grantAllowance('youtube.com', 5, 'test');
+    expect(store.isDomainBlocked('m.youtube.com')).toBe(false);
+    expect(store.isDomainBlocked('youtube.com')).toBe(false);
+  });
+});
+
 describe('save', () => {
   it('keeps keys the store does not know', () => {
     store.addBlockedDomain('reddit.com');

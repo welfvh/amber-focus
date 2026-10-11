@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild + restart server + restart daemon. Always works.
+# Rebuild + restart daemon, then server. Always works.
 #
 # Steady state: `restart` RPC over the Unix socket → daemon self-exits →
 # launchd KeepAlive respawns from the latest bundle. No sudo.
@@ -86,9 +86,6 @@ wait_for_new_pid() {
 echo "==> build"
 npm run build
 
-echo "==> restart server (user LaunchAgent, no sudo)"
-launchctl kickstart -k "gui/$(id -u)/com.amberfocus.server" 2>/dev/null || true
-
 # --- Wait for socket; if absent, daemon isn't running → bootstrap with sudo. ---
 if ! wait_for_socket; then
   echo "==> daemon socket missing — running one-time sudo enable + bootstrap/kickstart"
@@ -120,20 +117,22 @@ if [[ "$RESTART_REPLY" == *'"Method not found"'* || "$RESTART_REPLY" == *"-32601
     exit 1
   fi
   echo "==> daemon back up (pid $NEW_PID, was $OLD_PID) via sudo bootstrap"
-  exit 0
-fi
-
-if [[ "$RESTART_REPLY" != *'"scheduled":true'* ]]; then
+elif [[ "$RESTART_REPLY" != *'"scheduled":true'* ]]; then
   echo "ERROR: unexpected restart reply: $RESTART_REPLY"
   exit 1
+else
+  echo "==> waiting for daemon to come back (was pid $OLD_PID)"
+  NEW_PID="$(wait_for_new_pid "$OLD_PID")" || {
+    echo "ERROR: daemon did not respawn within 10s. Check: launchctl print system/com.amberfocus.daemon"
+    exit 1
+  }
+  echo "==> daemon back up (pid $NEW_PID, was $OLD_PID)"
 fi
 
-echo "==> waiting for daemon to come back (was pid $OLD_PID)"
-NEW_PID="$(wait_for_new_pid "$OLD_PID")" || {
-  echo "ERROR: daemon did not respawn within 10s. Check: launchctl print system/com.amberfocus.daemon"
-  exit 1
-}
-echo "==> daemon back up (pid $NEW_PID, was $OLD_PID)"
+# The server restarts after the daemon, so its boot pass reaches the new daemon.
+echo "==> restart server (user LaunchAgent, no sudo)"
+launchctl kickstart -k "gui/$(id -u)/com.amberfocus.server" 2>/dev/null || true
+for _ in {1..40}; do curl -s -m1 -o /dev/null localhost:8053/status && break; sleep 0.25; done
 
 # Ask the fresh daemon for a pass now, then print the health line that matters.
 sleep 1

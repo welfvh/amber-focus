@@ -14,6 +14,7 @@ import {
   isOnBlocklist,
   isHardLocked,
   lockoutCoveredBy,
+  blockingParent,
   getAllowanceRemaining,
   isShieldActive,
   type Allowance,
@@ -131,6 +132,11 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
   if (!reason.ok) return { ok: false, status: 400, error: reason.error };
   const intent = parseText(req.intent, 'intent', MAX_INTENT_LENGTH);
   if (!intent.ok) return { ok: false, status: 400, error: intent.error };
+
+  const parent = blockingParent(domain.value);
+  if (parent) {
+    return { ok: false, status: 400, error: `${domain.value} is blocked as part of ${parent}; grant ${parent} instead` };
+  }
 
   const lock = lockoutCoveredBy(domain.value);
   if (lock) {
