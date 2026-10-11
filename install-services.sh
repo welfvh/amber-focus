@@ -117,6 +117,7 @@ echo "Daemon installed."
 
 # --- 9. Install server (user agent) ---
 echo "Installing server..."
+mkdir -p ~/Library/LaunchAgents
 cp "$SCRIPT_DIR/$SERVER_PLIST_NAME.plist" ~/Library/LaunchAgents/
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/$SERVER_PLIST_NAME.plist
