@@ -206,6 +206,12 @@ const DEFAULT_CATEGORIES = [
   'gaming', 'memes', 'reading', 'dating', 'gambling', 'adult',
 ];
 
+/** Category names from installer input: "all" (every category), or a comma-separated list. */
+export function categoriesFromInput(input: string): string[] {
+  if (input.trim() === 'all') return Object.keys(BLOCK_CATEGORIES);
+  return input.split(',').map(c => c.trim()).filter(Boolean);
+}
+
 /** Merge selected category domains into a flat blocklist. */
 export function domainsForCategories(categories: string[]): string[] {
   const all = new Set<string>();

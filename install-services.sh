@@ -48,7 +48,7 @@ mkdir -p "$CONFIG_DIR"
 # --- 6. Block categories ---
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
     if [ "$1" = "--all" ]; then
-        CATEGORIES="social,video,news,shopping,adult,gambling"
+        CATEGORIES="all"
     elif [ -n "$1" ]; then
         CATEGORIES="$1"
     else
@@ -69,16 +69,16 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
         echo "Default: ALL categories enabled"
         read -p "Categories to enable (comma-separated, or press Enter for ALL): " CATEGORIES < /dev/tty
         if [ -z "$CATEGORIES" ]; then
-            CATEGORIES="social,video,news,shopping,sports,gaming,memes,reading,dating,gambling,adult"
+            CATEGORIES="all"
         fi
     fi
     echo "Enabled categories: $CATEGORIES"
     # Write the blocklist for the chosen categories; the server keeps it from here.
     node --input-type=module -e '
       import fs from "fs";
-      import { domainsForCategories } from "./dist/store.js";
+      import { domainsForCategories, categoriesFromInput } from "./dist/store.js";
       const [file, cats] = process.argv.slice(1);
-      const blockedDomains = domainsForCategories(cats.split(",").map(c => c.trim()));
+      const blockedDomains = domainsForCategories(categoriesFromInput(cats));
       fs.writeFileSync(file, JSON.stringify({ blockedDomains }, null, 2));
       console.log(`Blocking ${blockedDomains.length} domains`);
     ' "$CONFIG_DIR/config.json" "$CATEGORIES"

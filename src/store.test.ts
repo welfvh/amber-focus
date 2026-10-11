@@ -54,6 +54,18 @@ describe('addHardLockout', () => {
   });
 });
 
+describe('categoriesFromInput', () => {
+  it('selects every category for "all"', () => {
+    expect(store.categoriesFromInput('all')).toEqual(Object.keys(store.BLOCK_CATEGORIES));
+    expect(store.domainsForCategories(store.categoriesFromInput('all'))).toEqual(
+      expect.arrayContaining(['espn.com', 'chess.com', 'imgur.com', 'wattpad.com', 'tinder.com', 'amazon.com']),
+    );
+  });
+  it('splits a comma-separated list', () => {
+    expect(store.categoriesFromInput(' social, video ,')).toEqual(['social', 'video']);
+  });
+});
+
 describe('blockingParent', () => {
   it('names the blocklist entry that covers a subdomain', () => {
     expect(store.blockingParent('m.youtube.com')).toBe('youtube.com');
