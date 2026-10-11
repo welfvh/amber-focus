@@ -7,14 +7,28 @@
 //   - NSWorkspace launch observer: instant kill on app launch
 //   - 5s ticker: catches apps that were already running when a window started
 //
+// Quitting is always polite: terminate() is the same request as Cmd-Q, so the
+// app may ask to save and the user may cancel. The enforcer never force-quits,
+// because a force-quit discards unsaved work. An app that still runs RETRY_S
+// after a request gets a new request, and one log line per request.
+//
+// AMBER_FOCUS_CONFIG overrides the config path, so a test run can use a scratch
+// config. The log goes next to the config file.
+//
 // Build: swiftc retreat-enforcer.swift -o retreat-enforcer -O
 // Run as user LaunchAgent (NOT root — NSWorkspace targets the session user).
 
 import Cocoa
 import Foundation
 
-let CONFIG_PATH = NSString(string: "~/.config/amber-focus/config.json").expandingTildeInPath
-let LOG_PATH = NSString(string: "~/.config/amber-focus/retreat-enforcer.log").expandingTildeInPath
+// Absolute path, so a relative AMBER_FOCUS_CONFIG still gives a usable log directory.
+let CONFIG_PATH = URL(fileURLWithPath: NSString(string:
+    ProcessInfo.processInfo.environment["AMBER_FOCUS_CONFIG"] ?? "~/.config/amber-focus/config.json"
+).expandingTildeInPath).absoluteURL.standardizedFileURL.path
+let LOG_PATH = (CONFIG_PATH as NSString).deletingLastPathComponent + "/retreat-enforcer.log"
+
+/// Seconds between repeated quit requests to an app that is still running.
+let RETRY_S: TimeInterval = 60
 
 // System-essential bundle IDs that are never killed (would break the OS).
 let SYSTEM_ALLOWLIST: Set<String> = [
@@ -60,7 +74,9 @@ struct RetreatConfig {
 func log(_ msg: String) {
     let ts = ISO8601DateFormatter().string(from: Date())
     let line = "[\(ts)] \(msg)\n"
-    FileManager.default.createFile(atPath: LOG_PATH, contents: nil, attributes: nil)
+    if !FileManager.default.fileExists(atPath: LOG_PATH) {
+        FileManager.default.createFile(atPath: LOG_PATH, contents: nil, attributes: nil)
+    }
     if let fh = FileHandle(forWritingAtPath: LOG_PATH) {
         fh.seekToEndOfFile()
         if let d = line.data(using: .utf8) { fh.write(d) }
@@ -104,7 +120,23 @@ func loadConfig() -> RetreatConfig {
 
 let myPID = ProcessInfo.processInfo.processIdentifier
 
-func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig) {
+/// Whether retreat was active at the last check (for the transition log lines).
+var retreatActive = false
+/// pid → time of the last quit request.
+var quitRequested: [pid_t: Date] = [:]
+
+/// Log window transitions; returns whether retreat is active now.
+func updateActive(_ config: RetreatConfig) -> Bool {
+    let active = config.isActiveNow()
+    if active != retreatActive {
+        retreatActive = active
+        quitRequested.removeAll()
+        log(active ? "retreat window active" : "retreat window ended")
+    }
+    return active
+}
+
+func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig, now: Date = Date()) {
     guard app.processIdentifier != myPID else { return }
     guard app.activationPolicy == .regular else { return }
     guard let bundleID = app.bundleIdentifier else { return }
@@ -120,24 +152,30 @@ func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig) {
     }
     guard shouldKill else { return }
 
-    let name = app.localizedName ?? "?"
-    if app.terminate() {
-        log("terminate \(bundleID) (\(name))")
-    } else {
-        app.forceTerminate()
-        log("forceTerminate \(bundleID) (\(name))")
+    let pid = app.processIdentifier
+    var note = ""
+    if let last = quitRequested[pid] {
+        let waited = now.timeIntervalSince(last)
+        guard waited >= RETRY_S else { return }
+        note = " — still running \(Int(waited))s after the last request"
     }
+    quitRequested[pid] = now
+    let sent = app.terminate()
+    log("terminate \(bundleID) (\(app.localizedName ?? "?"))\(note)\(sent ? "" : " — request not sent")")
 }
 
 func sweep() {
     let config = loadConfig()
-    guard config.isActiveNow() else { return }
-    for app in NSWorkspace.shared.runningApplications {
+    guard updateActive(config) else { return }
+    let running = NSWorkspace.shared.runningApplications
+    let live = Set(running.map { $0.processIdentifier })
+    quitRequested = quitRequested.filter { live.contains($0.key) }
+    for app in running {
         killIfDisallowed(app, config: config)
     }
 }
 
-log("retreat-enforcer starting (pid \(myPID))")
+log("retreat-enforcer starting (pid \(myPID), config \(CONFIG_PATH))")
 
 // Launch observer
 NSWorkspace.shared.notificationCenter.addObserver(
@@ -147,7 +185,7 @@ NSWorkspace.shared.notificationCenter.addObserver(
 ) { note in
     guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
     let config = loadConfig()
-    guard config.isActiveNow() else { return }
+    guard updateActive(config) else { return }
     killIfDisallowed(app, config: config)
 }
 
