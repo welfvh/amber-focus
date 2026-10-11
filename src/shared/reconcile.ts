@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { normalizeDomain, collectAllDomainsWithVariants, isValidHostname } from './domains.js';
+import { normalizeDomain, collectAllDomainsWithVariants, isValidHostname, PRIVATE_RELAY_HOSTS } from './domains.js';
 
 export const MARKER_START = '# BEGIN AMBER FOCUS BLOCK';
 export const MARKER_END = '# END AMBER FOCUS BLOCK';
@@ -106,6 +106,14 @@ export function renderHostsSection(state: DesiredState, generatedAt: string): st
   for (const host of variants) {
     lines.push(`0.0.0.0 ${host}`);
     lines.push(`:: ${host}`);
+  }
+  if (state.shieldActive) {
+    // Not in the `# Domains:` line: they are no site, so grants and expiry never diff them.
+    lines.push('# iCloud Private Relay ingress (see PRIVATE_RELAY_HOSTS)');
+    for (const host of PRIVATE_RELAY_HOSTS) {
+      lines.push(`0.0.0.0 ${host}`);
+      lines.push(`:: ${host}`);
+    }
   }
   lines.push(MARKER_END);
   return lines.join('\n') + '\n';

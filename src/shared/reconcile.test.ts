@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PRIVATE_RELAY_HOSTS } from './domains.js';
 import {
   DesiredConfigSchema,
   effectiveBlockedDomains,
@@ -68,6 +69,16 @@ describe('hosts section', () => {
     expect(content).toContain(':: old.reddit.com');
   });
 
+  it('blocks the Private Relay ingress while the shield is on, outside the diffed domains', () => {
+    const on = replaceManagedSection('', renderHostsSection(state, 't'));
+    expect(on).toContain('0.0.0.0 mask.icloud.com');
+    expect(on).toContain(':: mask-h2.icloud.com');
+    expect(parseManagedDomains(on)).toEqual(['reddit.com', 'youtube.com']);
+    expect(buildHostsIndex(on).lookup('mask.icloud.com')).toBe('managed');
+    const off = renderHostsSection({ shieldActive: false, blockedDomains: [] }, 't');
+    expect(off).not.toContain('mask.icloud.com');
+  });
+
   it('reports unknown previous state for a missing or old-format section', () => {
     expect(parseManagedDomains('127.0.0.1 localhost\n')).toBeNull();
     const oldFormat = `${MARKER_START}\n# Generated: x\n0.0.0.0 a.com\n:: a.com\n${MARKER_END}\n`;
@@ -97,7 +108,8 @@ describe('hosts section', () => {
     for (const state of [{ shieldActive: true, blockedDomains: [] }, { shieldActive: false, blockedDomains: ['a.com'] }]) {
       const content = replaceManagedSection('127.0.0.1 localhost\n', renderHostsSection(state, 't'));
       expect(parseManagedDomains(content)).toEqual([]);
-      expect(content).not.toMatch(/^(0\.0\.0\.0|::) /m);
+      const hosts = [...content.matchAll(/^(?:0\.0\.0\.0|::) (\S+)$/gm)].map(m => m[1]);
+      expect(new Set(hosts)).toEqual(new Set(state.shieldActive ? PRIVATE_RELAY_HOSTS : []));
     }
   });
 });
