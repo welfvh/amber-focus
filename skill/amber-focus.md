@@ -39,10 +39,17 @@ domain off the list.
 
 ## Vigilant mode
 
-`--vigilant "<intent>"` runs the grant under AI monitoring of the granted site against the
-intent. Use it for high-risk sites (social, video) with a narrow intent. Needs the Anthropic
-key in Keychain (`cc/anthropic` / `api_key`). `focus-grant` reports whether monitoring
-started; `curl -s localhost:8053/api/vigilant/status`.
+`--vigilant "<intent>"` runs the grant under AI monitoring. Use it for high-risk sites
+(social, video) with a narrow intent: "watch HUF HAUS house tours", not "youtube".
+- Every 15 s Claude Haiku judges the open pages on the site (URL + title) against the intent.
+- An off-intent page closes at once and counts a strike; 3 strikes end the grant.
+- Home, search and login pages may stay open for 2 minutes each.
+- Monitoring fails closed: 3 checks in a row that fail end the grant. A vigilant grant is
+  refused up front when monitoring cannot run.
+- A re-grant without `--vigilant` keeps the active intent.
+
+Needs the Anthropic key in Keychain (`cc/anthropic` / `api_key`) and Automation consent for
+`node` → the browser. Status: `curl -s localhost:8053/api/vigilant/status`.
 
 ## Still blocked after a grant
 
