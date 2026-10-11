@@ -23,7 +23,7 @@ import {
 import { reconcile, getDaemonStatus } from './daemon-client.js';
 import { closeTabs, reloadTabs } from './browser.js';
 import { buildHostsIndex, type HostsBlockSource, type HostsIndex } from './shared/reconcile.js';
-import { parseDomain, parseMinutes, parseText } from './policy.js';
+import { parseDomain, parseMinutes, parseText, type Parsed } from './policy.js';
 import type { DaemonStatus } from './shared/ipc-types.js';
 import { startSession as startVigilantSession, stopSessionsForDomain } from './vigilant.js';
 
@@ -138,7 +138,8 @@ export interface GrantRequest {
   domain: unknown;
   minutes: unknown;
   reason?: unknown;
-  /** Present when the grant must run under vigilant monitoring. */
+  /** Truthy when the grant must run under vigilant monitoring; it then needs an `intent`. */
+  vigilant?: unknown;
   intent?: unknown;
 }
 
@@ -154,8 +155,13 @@ export async function grant(req: GrantRequest): Promise<GrantResult> {
   if (!minutes.ok) return { ok: false, status: 400, error: minutes.error };
   const reason = parseText(req.reason, 'reason', MAX_REASON_LENGTH);
   if (!reason.ok) return { ok: false, status: 400, error: reason.error };
-  const intent = parseText(req.intent, 'intent', MAX_INTENT_LENGTH);
+  // A caller who asks for monitoring never gets an unmonitored grant instead.
+  const vigilant = Boolean(req.vigilant);
+  const intent: Parsed<string | undefined> = vigilant
+    ? parseText(req.intent, 'intent', MAX_INTENT_LENGTH)
+    : { ok: true, value: undefined };
   if (!intent.ok) return { ok: false, status: 400, error: intent.error };
+  if (vigilant && !intent.value) return { ok: false, status: 400, error: 'vigilant grants need an intent' };
 
   const parent = blockingParent(domain.value);
   if (parent) {

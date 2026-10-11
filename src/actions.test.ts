@@ -12,6 +12,7 @@ vi.mock('./browser.js', () => ({
 vi.mock('./vigilant.js', () => ({ startSession: vi.fn(() => 'session'), stopSessionsForDomain: vi.fn() }));
 
 import { reconcile } from './daemon-client.js';
+import { startSession } from './vigilant.js';
 
 let actions: typeof import('./actions.js');
 let store: typeof import('./store.js');
@@ -101,5 +102,30 @@ describe('unblock', () => {
     expect(await actions.unblock('youtube.com')).toMatchObject({ ok: true, outcome: { applied: true } });
     expect(store.getBlockedDomains()).not.toContain('youtube.com');
     expect(reconcile).toHaveBeenCalledWith('unblock:youtube.com');
+  });
+});
+
+describe('grant', () => {
+  beforeEach(() => {
+    vi.mocked(reconcile).mockResolvedValue(status());
+    vi.mocked(startSession).mockClear();
+  });
+
+  it('refuses a vigilant grant without a usable intent', async () => {
+    for (const intent of [undefined, '', '   ']) {
+      expect(await actions.grant({ domain: 'vimeo.com', minutes: 5, vigilant: true, intent })).toMatchObject({ ok: false, status: 400 });
+    }
+    expect(store.getActiveAllowances().map(a => a.domain)).not.toContain('vimeo.com');
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+  it('runs a vigilant grant under monitoring with the trimmed intent', async () => {
+    const result = await actions.grant({ domain: 'vimeo.com', minutes: 5, vigilant: true, intent: ' watch the talk ' });
+    expect(result).toMatchObject({ ok: true, vigilantSessionId: 'session' });
+    expect(startSession).toHaveBeenCalledWith('vimeo.com', 'watch the talk', expect.any(Number), expect.any(Function));
+  });
+  it('ignores an intent when monitoring was not asked for', async () => {
+    const result = await actions.grant({ domain: 'vimeo.com', minutes: 5, intent: 'not monitored' });
+    expect(result).toMatchObject({ ok: true, vigilantSessionId: null });
+    expect(startSession).not.toHaveBeenCalled();
   });
 });

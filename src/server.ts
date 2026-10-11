@@ -151,11 +151,7 @@ app.get('/api/check/:domain', route(async (req, res) => {
 // Grant temporary access (optionally with vigilant monitoring: `intent`)
 app.post('/api/grant', route(async (req, res) => {
   const { domain, minutes, reason, vigilant, intent } = req.body ?? {};
-  if (vigilant && !intent) {
-    res.status(400).json({ error: 'vigilant grants need an intent' });
-    return;
-  }
-  const result = await grant({ domain, minutes, reason, intent: vigilant ? intent : undefined });
+  const result = await grant({ domain, minutes, reason, vigilant, intent });
   if (!result.ok) {
     res.status(result.status).json({ error: result.error });
     return;
