@@ -93,6 +93,38 @@ describe('Reconciler', () => {
     expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
   });
 
+  it('retries pf and the side effects when a pass fails after the hosts write', async () => {
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
+    await d.r.tick('boot');
+
+    d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000 }] });
+    d.pf.refreshDynamicRules.mockRejectedValueOnce(new Error('pf write failed'));
+    const failed = await d.r.tick('config-change');
+    expect(failed.converged).toBe(false);
+    expect(failed.lastError).toMatch(/pf write failed/);
+    expect(d.files.get(HOSTS)).not.toContain('0.0.0.0 a.com'); // hosts already written
+
+    const retried = await d.r.tick('timer');
+    expect(retried.converged).toBe(true);
+    expect(retried.lastError).toBeNull();
+    expect(d.pf.refreshDynamicRules).toHaveBeenCalledTimes(3); // boot, failed, retry
+    expect(d.pf.refreshDynamicRules).toHaveBeenLastCalledWith(['b.com'], true);
+    expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforces connections when a grant that allowed every domain expires', async () => {
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
+    await d.r.tick('boot');
+    d.setConfig({ blockedDomains: ['a.com'], allowances: [{ domain: 'a.com', expiresAt: 1_000_000 + 60_000 }] });
+    const granted = await d.r.tick('config-change');
+    expect(granted.domainsBlocked).toBe(0);
+
+    d.advance(120_000);
+    await d.r.tick('timer');
+    expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
+    expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
+  });
+
   it('keeps the OS untouched and reports the error when config.json is unreadable', async () => {
     d.setConfig({ blockedDomains: ['a.com'], allowances: [] });
     await d.r.tick('boot');

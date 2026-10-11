@@ -14455,7 +14455,7 @@ var Reconciler = class {
       const desired = desiredStateFromConfig(cfg, now);
       const before = await this.sys.readFile(this.hostsPath);
       const currentSection = extractManagedSection(before);
-      const prevDomains = parseManagedDomains(before);
+      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : parseManagedDomains(before);
       const wantedSection = renderHostsSection(desired, new Date(now).toISOString());
       const hostsChanged = !sectionEquivalent(currentSection, wantedSection);
       if (hostsChanged) {
@@ -14463,8 +14463,7 @@ var Reconciler = class {
         await flushDnsCache(this.sys.exec.bind(this.sys), this.sys.execSilent.bind(this.sys));
         this.log(`hosts updated (${reason}): ${desired.blockedDomains.length} domains, shield=${desired.shieldActive}`);
       }
-      const shieldChanged = !this.lastApplied || this.lastApplied.shieldActive !== desired.shieldActive;
-      if (hostsChanged || shieldChanged) {
+      if (hostsChanged || !this.lastApplied || !sameState(this.lastApplied, desired)) {
         await this.pf.updateStaticRules(desired.shieldActive);
         await this.pf.refreshDynamicRules(desired.blockedDomains, desired.shieldActive);
       }
@@ -14522,6 +14521,9 @@ var Reconciler = class {
     return this.getStatus();
   }
 };
+function sameState(a, b) {
+  return a.shieldActive === b.shieldActive && a.blockedDomains.join(" ") === b.blockedDomains.join(" ");
+}
 
 // src/daemon/index.ts
 var SOCKET_PATH = "/tmp/amberfocus.sock";

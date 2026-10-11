@@ -9,8 +9,10 @@
  * browser DNS cache for newly allowed ones). Browser tabs are the server's job:
  * it runs as the user, and root never drives a browser.
  *
- * The previous state is read back from the hosts file itself, so a daemon
- * restart never loses track of what it last applied.
+ * The diff base is the state the last complete pass applied. A pass that fails
+ * partway (after the hosts write, before pf or a side effect) leaves that base
+ * as it was, so the next pass retries pf and the side effects. After a daemon
+ * restart, the base is read back from the hosts file itself.
  *
  * Failure policy: on any error the pass stops, the OS keeps its current state
  * (blocked stays blocked), and `lastError` reports it.
@@ -119,7 +121,7 @@ export class Reconciler {
 
       const before = await this.sys.readFile(this.hostsPath);
       const currentSection = extractManagedSection(before);
-      const prevDomains = parseManagedDomains(before);
+      const prevDomains = this.lastApplied ? this.lastApplied.blockedDomains : parseManagedDomains(before);
       const wantedSection = renderHostsSection(desired, new Date(now).toISOString());
       const hostsChanged = !sectionEquivalent(currentSection, wantedSection);
 
@@ -129,14 +131,15 @@ export class Reconciler {
         this.log(`hosts updated (${reason}): ${desired.blockedDomains.length} domains, shield=${desired.shieldActive}`);
       }
 
-      const shieldChanged = !this.lastApplied || this.lastApplied.shieldActive !== desired.shieldActive;
-      if (hostsChanged || shieldChanged) {
+      // pf follows the last complete pass, not the hosts file: a failed pf
+      // update after a hosts write is retried until it succeeds.
+      if (hostsChanged || !this.lastApplied || !sameState(this.lastApplied, desired)) {
         await this.pf.updateStaticRules(desired.shieldActive);
         await this.pf.refreshDynamicRules(desired.blockedDomains, desired.shieldActive);
       }
 
-      // Unknown previous state (fresh install, old section format): converge
-      // hosts and pf only; no connection side effects to derive.
+      // Unknown previous state (fresh install, old section format, no complete
+      // pass yet): converge hosts and pf only; no connection side effects to derive.
       const diff = prevDomains ? diffDomains(prevDomains, desired.blockedDomains) : { added: [], removed: [] };
       if (diff.added.length > 0) {
         if (diff.added.length <= MAX_INDIVIDUAL_ENFORCE) {
@@ -192,4 +195,8 @@ export class Reconciler {
     }
     return this.getStatus();
   }
+}
+
+function sameState(a: DesiredState, b: DesiredState): boolean {
+  return a.shieldActive === b.shieldActive && a.blockedDomains.join(' ') === b.blockedDomains.join(' ');
 }
