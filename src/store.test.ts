@@ -57,6 +57,20 @@ describe('isDomainBlocked', () => {
   });
 });
 
+describe('shield off', () => {
+  it('blocks nothing, like the daemon', () => {
+    expect(store.isDomainBlocked('news.google.com')).toBe(true);
+    store.setShieldActive(false);
+    try {
+      expect(store.isDomainBlocked('news.google.com')).toBe(false);
+      expect(store.getEffectivelyBlockedDomains()).toEqual([]);
+    } finally {
+      store.setShieldActive(true);
+    }
+    expect(store.isDomainBlocked('news.google.com')).toBe(true);
+  });
+});
+
 describe('save', () => {
   it('keeps keys the store does not know', () => {
     store.addBlockedDomain('reddit.com');

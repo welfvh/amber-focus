@@ -317,8 +317,7 @@ export function isOnBlocklist(domain: string): boolean {
 /** Desired state for one domain: covered by an entry of the effective blocklist (the daemon's view). */
 export function isDomainBlocked(domain: string): boolean {
   const normalized = normalizeDomain(domain);
-  const effective = effectiveBlockedDomains(store.get('blockedDomains', []), store.get('allowances', []), Date.now());
-  return effective.some(b => matchesDomain(normalized, b));
+  return getEffectivelyBlockedDomains().some(b => matchesDomain(normalized, b));
 }
 
 /**
@@ -362,8 +361,12 @@ export function getBlockedDomains(): string[] {
   return store.get('blockedDomains', []);
 }
 
-/** Blocked domains minus those covered by an active allowance — what the daemon converges to. */
+/**
+ * What the daemon converges to: blocked domains minus those covered by an
+ * active allowance, and nothing while the shield is off.
+ */
 export function getEffectivelyBlockedDomains(): string[] {
+  if (!isShieldActive()) return [];
   return effectiveBlockedDomains(store.get('blockedDomains', []), store.get('allowances', []), Date.now());
 }
 
