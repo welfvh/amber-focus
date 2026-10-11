@@ -135,11 +135,14 @@ export function createVigilant(deps: VigilantDeps) {
       return;
     }
     s.busy = true;
+    /** False once stop() removed this session (revoke, expiry, re-grant). A stale tick must not act. */
+    const live = () => sessions.get(id) === s;
     try {
       const elapsed = s.lastTickAt === null ? 0 : now - s.lastTickAt;
       s.lastTickAt = now;
 
       const { tabs, errors } = await deps.listTabs([s.domain]);
+      if (!live()) return;
       if (errors.length > 0) {
         await fail(s, errors.join('; '));
         return;
@@ -151,9 +154,10 @@ export function createVigilant(deps: VigilantDeps) {
         try {
           verdicts = await deps.judge(s.domain, s.intent, fresh.map(t => ({ url: t.url, title: t.title })));
         } catch (err) {
-          await fail(s, err instanceof Error ? err.message : String(err));
+          if (live()) await fail(s, err instanceof Error ? err.message : String(err));
           return;
         }
+        if (!live()) return;
         fresh.forEach((t, i) => {
           s.urls.set(t.url, { ...verdicts[i], title: t.title, navMs: 0 });
           deps.log({ event: 'verdict', sessionId: s.id, domain: s.domain, url: t.url, title: t.title, ...verdicts[i] });
@@ -175,6 +179,7 @@ export function createVigilant(deps: VigilantDeps) {
 
       if (toClose.size > 0) {
         const closed = await deps.closeUrls([...toClose.keys()]);
+        if (!live()) return;
         if (closed.errors.length > 0) {
           await fail(s, `could not close off-intent tabs: ${closed.errors.join('; ')}`);
           return;

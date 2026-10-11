@@ -17,10 +17,16 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
     closed: [] as string[],
     notes: [] as string[],
     ended: [] as string[],
+    /** Runs inside a call, before it returns: stands in for events during the await. */
+    during: {} as { list?: () => void; judge?: () => void; close?: () => void },
   };
   const deps: VigilantDeps = {
-    listTabs: async () => ({ tabs: state.tabs, errors: state.listErrors }),
+    listTabs: async () => {
+      state.during.list?.();
+      return { tabs: state.tabs, errors: state.listErrors };
+    },
     closeUrls: async (urls) => {
+      state.during.close?.();
       state.closed.push(...urls);
       state.tabs = state.tabs.filter(t => !urls.includes(t.url));
       return { count: urls.length, errors: [] };
@@ -28,6 +34,7 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
     judge: async (_d, _i, tabs) => {
       if (state.judgeError) throw new Error(state.judgeError);
       state.judged.push(...tabs.map(t => t.url));
+      state.during.judge?.();
       return tabs.map(t => ({ verdict: verdicts[t.url] ?? 'off_task', reason: 'test' }));
     },
     notify: (title) => { state.notes.push(title); },
@@ -149,5 +156,56 @@ describe('vigilant fails closed', () => {
     await v.tick(id);
     expect(v.status().active).toBe(false);
     expect(state.ended).toEqual([]);
+  });
+});
+
+describe('vigilant stopped during a tick', () => {
+  it('acts on nothing once stopped while reading tabs', async () => {
+    const { v, id, state } = world({});
+    state.listErrors = ['osascript: timeout'];
+    state.during.list = () => v.stop(id);
+    await v.tick(id);
+    expect(state.notes).toEqual([]);
+    expect(state.ended).toEqual([]);
+  });
+
+  it('closes nothing once stopped while the model judges', async () => {
+    const { v, id, state } = world({});
+    state.tabs = [tab('https://youtube.com/watch?v=cats')];
+    state.during.judge = () => v.stop(id);
+    await v.tick(id);
+    expect(state.closed).toEqual([]);
+    expect(state.notes).toEqual([]);
+  });
+
+  it('cannot end a re-grant that replaced it while the model judges', async () => {
+    const { v, id, state } = world({});
+    for (const n of [1, 2]) {
+      state.tabs = [tab(`https://youtube.com/watch?v=${n}`)];
+      await v.tick(id);
+    }
+    state.tabs = [tab('https://youtube.com/watch?v=3')];
+    let newId = '';
+    state.during.judge = () => {
+      newId = v.start('youtube.com', 'watch cat videos', state.now + 20 * 60_000, async (reason) => { state.ended.push(reason); });
+    };
+    await v.tick(id);
+    expect(state.ended).toEqual([]);
+    expect(state.closed).not.toContain('https://youtube.com/watch?v=3');
+    expect(v.status().sessions.map(s => s.id)).toEqual([newId]);
+    v.stop(newId);
+  });
+
+  it('counts no strike once stopped while closing tabs', async () => {
+    const { v, id, state } = world({});
+    for (const n of [1, 2]) {
+      state.tabs = [tab(`https://youtube.com/watch?v=${n}`)];
+      await v.tick(id);
+    }
+    state.tabs = [tab('https://youtube.com/watch?v=3')];
+    state.during.close = () => v.stop(id);
+    await v.tick(id);
+    expect(state.ended).toEqual([]);
+    expect(state.notes).toEqual(['Closed off-intent tab (1/3)', 'Closed off-intent tab (2/3)']);
   });
 });
