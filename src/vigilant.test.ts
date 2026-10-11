@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createVigilant, JUDGE_BATCH, MAX_FAILURES, NAV_LIMIT_MS, TICK_MS, type TabVerdict, type VigilantDeps } from './vigilant.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { createVigilant, judgeWithClaude, JUDGE_BATCH, MAX_FAILURES, NAV_LIMIT_MS, TICK_MS, type TabVerdict, type VigilantDeps } from './vigilant.js';
 import type { BrowserTab } from './browser.js';
 
 function tab(url: string, title = url): BrowserTab {
@@ -305,5 +306,91 @@ describe('vigilant stopped during a tick', () => {
     await v.tick(id);
     expect(state.ended).toEqual([]);
     expect(state.notes).toEqual(['Closed off-intent tab (1/3)', 'Closed off-intent tab (2/3)']);
+  });
+});
+
+/** A real SDK client whose fetch returns one canned Messages API response and records the request. */
+function fakeApi(status: number, body: unknown) {
+  const requests: { url: string; body: any }[] = [];
+  const client = new Anthropic({
+    apiKey: 'test',
+    maxRetries: 0,
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  return { client, requests };
+}
+
+function message(text: string | null, stopReason = 'end_turn') {
+  return {
+    id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-haiku-4-5-20251001',
+    content: text === null ? [] : [{ type: 'text', text }],
+    stop_reason: stopReason, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 },
+  };
+}
+
+function apiError(type: string) {
+  return { type: 'error', error: { type, message: 'test' } };
+}
+
+describe('judgeWithClaude', () => {
+  const tabs = [
+    { url: 'https://youtube.com/watch?v=huf', title: 'HUF HAUS tour' },
+    { url: 'https://youtube.com/watch?v=cats', title: 'Funny cats' },
+  ];
+
+  it('sends the tabs as indexed data with a structured output format', async () => {
+    const verdicts = [{ index: 0, verdict: 'on_task', reason: 'a' }, { index: 1, verdict: 'off_task', reason: 'b' }];
+    const { client, requests } = fakeApi(200, message(JSON.stringify({ verdicts })));
+    await judgeWithClaude('youtube.com', 'huf haus tours', tabs, client);
+    expect(requests).toHaveLength(1);
+    const { url, body } = requests[0];
+    expect(url).toMatch(/\/v1\/messages$/);
+    expect(body.model).toBe('claude-haiku-4-5-20251001');
+    expect(body.max_tokens).toBe(1024);
+    expect(body.system).toContain('"huf haus tours"');
+    expect(body.messages[0].content).toContain(JSON.stringify(tabs.map((t, index) => ({ index, ...t }))));
+    expect(body.output_config.format.type).toBe('json_schema');
+    expect(body.output_config.format.schema.properties.verdicts.items.required).toEqual(['index', 'verdict', 'reason']);
+  });
+
+  it('maps verdicts to tabs by index, in any order', async () => {
+    const verdicts = [{ index: 1, verdict: 'off_task', reason: 'cats' }, { index: 0, verdict: 'on_task', reason: 'huf' }];
+    const { client } = fakeApi(200, message(JSON.stringify({ verdicts })));
+    expect(await judgeWithClaude('youtube.com', 'huf haus tours', tabs, client)).toEqual([
+      { verdict: 'on_task', reason: 'huf' },
+      { verdict: 'off_task', reason: 'cats' },
+    ]);
+  });
+
+  it('throws when a tab has no verdict', async () => {
+    const { client } = fakeApi(200, message(JSON.stringify({ verdicts: [{ index: 0, verdict: 'on_task', reason: 'a' }] })));
+    await expect(judgeWithClaude('youtube.com', 'huf haus tours', tabs, client)).rejects.toThrow('no verdict for tab 1');
+  });
+
+  it('throws when the reply has no verdicts', async () => {
+    const { client } = fakeApi(200, message(null, 'refusal'));
+    await expect(judgeWithClaude('youtube.com', 'huf haus tours', tabs, client)).rejects.toThrow('no verdicts (stop_reason refusal)');
+  });
+
+  it('throws on a truncated or invalid reply', async () => {
+    const truncated = fakeApi(200, message('{"verdicts": [{"index": 0', 'max_tokens'));
+    await expect(judgeWithClaude('youtube.com', 'huf haus tours', tabs, truncated.client)).rejects.toThrow('Failed to parse structured output');
+    const invalid = fakeApi(200, message(JSON.stringify({ verdicts: [{ index: 0, verdict: 'fine', reason: 'a' }] })));
+    await expect(judgeWithClaude('youtube.com', 'huf haus tours', tabs, invalid.client)).rejects.toThrow('Failed to parse structured output');
+  });
+
+  it('names API errors', async () => {
+    const cases: [number, string, string | RegExp][] = [
+      [401, 'authentication_error', 'Anthropic API key rejected'],
+      [429, 'rate_limit_error', 'Anthropic API rate limit'],
+      [529, 'overloaded_error', /^Anthropic API error 529: /],
+    ];
+    for (const [status, type, expected] of cases) {
+      const { client } = fakeApi(status, apiError(type));
+      await expect(judgeWithClaude('youtube.com', 'huf haus tours', tabs, client)).rejects.toThrow(expected);
+    }
   });
 });
