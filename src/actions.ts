@@ -17,6 +17,7 @@ import {
   blockingParent,
   getAllowanceRemaining,
   isShieldActive,
+  removeBlockedDomain,
   type Allowance,
 } from './store.js';
 import { reconcile, getDaemonStatus } from './daemon-client.js';
@@ -106,6 +107,29 @@ export async function describeDomain(domain: string): Promise<DomainReport> {
     daemonRunning: status !== null,
     converged: status?.converged ?? false,
   };
+}
+
+// --- Blocklist ---
+
+export type UnblockResult =
+  | { ok: true; outcome: ApplyOutcome }
+  | { ok: false; status: 403; error: string };
+
+/**
+ * Remove a domain from the blocklist, then converge. Refused while a hard lock
+ * touches it: on the domain, on a parent, or on a subdomain its block covers.
+ */
+export async function unblock(domain: string): Promise<UnblockResult> {
+  const lock = lockoutCoveredBy(domain);
+  if (lock) {
+    return {
+      ok: false,
+      status: 403,
+      error: `REFUSED: ${domain} touches ${lock.domain}, HARD LOCKED until ${lock.until}. Cannot unblock.`,
+    };
+  }
+  removeBlockedDomain(domain);
+  return { ok: true, outcome: await applyDesiredState(`unblock:${domain}`) };
 }
 
 // --- Grants ---

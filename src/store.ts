@@ -470,19 +470,6 @@ export function lockoutCoveredBy(domain: string): HardLockout | null {
   }) ?? null;
 }
 
-/** Get the lockout expiry date for a domain, or null if not locked. */
-export function getHardLockoutUntil(domain: string): string | null {
-  const normalized = normalizeDomain(domain);
-  const lockouts = store.get('hardLockouts', []);
-  const now = new Date();
-  const lockout = lockouts.find(l => {
-    const lockDomain = normalizeDomain(l.domain);
-    const matches = normalized === lockDomain || normalized.endsWith('.' + lockDomain);
-    return matches && now < new Date(l.until);
-  });
-  return lockout?.until ?? null;
-}
-
 /** Get all currently active hard lockouts (not expired). */
 export function getActiveHardLockouts(): HardLockout[] {
   const lockouts = store.get('hardLockouts', []);

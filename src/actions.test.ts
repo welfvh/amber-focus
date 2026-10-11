@@ -14,6 +14,7 @@ vi.mock('./vigilant.js', () => ({ startSession: vi.fn(() => 'session'), stopSess
 import { reconcile } from './daemon-client.js';
 
 let actions: typeof import('./actions.js');
+let store: typeof import('./store.js');
 
 function status(over: Partial<DaemonStatus> = {}): DaemonStatus {
   return {
@@ -37,9 +38,16 @@ beforeAll(async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'amber-actions-'));
   const dir = path.join(home, '.config', 'amber-focus');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ blockedDomains: ['youtube.com'] }));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+    blockedDomains: ['youtube.com', 'google.com', 'reddit.com'],
+    hardLockouts: [
+      { domain: 'news.google.com', until: '2999-01-01' },
+      { domain: 'reddit.com', until: '2999-01-01' },
+    ],
+  }));
   process.env.HOME = home;
   actions = await import('./actions.js');
+  store = await import('./store.js');
 });
 
 beforeEach(() => {
@@ -73,5 +81,25 @@ describe('applyDesiredState', () => {
   it('reports applied only when the pass converged', async () => {
     vi.mocked(reconcile).mockResolvedValue(status());
     expect(await actions.applyDesiredState('test')).toEqual({ daemonRunning: true, applied: true, error: null });
+  });
+});
+
+describe('unblock', () => {
+  it('refuses a parent whose locked subdomain it would open', async () => {
+    const result = await actions.unblock('google.com');
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(store.getBlockedDomains()).toContain('google.com');
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+  it('refuses a locked domain and its subdomains', async () => {
+    expect(await actions.unblock('reddit.com')).toMatchObject({ ok: false, status: 403 });
+    expect(await actions.unblock('old.reddit.com')).toMatchObject({ ok: false, status: 403 });
+    expect(store.getBlockedDomains()).toContain('reddit.com');
+  });
+  it('removes an unlocked domain and converges', async () => {
+    vi.mocked(reconcile).mockResolvedValue(status());
+    expect(await actions.unblock('youtube.com')).toMatchObject({ ok: true, outcome: { applied: true } });
+    expect(store.getBlockedDomains()).not.toContain('youtube.com');
+    expect(reconcile).toHaveBeenCalledWith('unblock:youtube.com');
   });
 });

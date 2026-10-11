@@ -58,7 +58,7 @@ enforces now, with `source`: `managed` / `legacy` / `other`) next to `desiredBlo
 | `src/server.ts` | REST API, expiry loop (30 s), daemon watchdog (30 s), tab sweep (10 s). Never dies on daemon errors |
 | `src/guard.ts` | Request guard: loopback `Host` only, no `Origin` |
 | `src/policy.ts` | Input policy: `parseDomain` (hostname at or below a registrable domain, via `tldts`), grant minutes (1–60), text fields |
-| `src/actions.ts` | `grant` / `revoke` (the one path for both), `applyDesiredState`, OS truth (`osBlockState`, `describeDomain`), vigilant hooks |
+| `src/actions.ts` | `grant` / `revoke` (the one path for both), `unblock`, `applyDesiredState`, OS truth (`osBlockState`, `describeDomain`), vigilant hooks |
 | `src/browser.ts` | List, close, reload tabs in Chrome, Safari, Arc via JXA. Data goes in as a JSON argument, never into script source |
 | `src/notify.ts` | macOS notification banner (JXA, arguments only) |
 | `src/store.ts` | `config.json`: `shieldActive`, blocklist, allowances, hard lockouts, retreat. Atomic writes; a failed write throws and changes nothing; unknown keys kept; a missing file gets the defaults; a corrupt file is copied aside before defaults load; an unreadable file is never overwritten |
@@ -84,7 +84,7 @@ All on `http://127.0.0.1:8053`, local non-browser clients only (see above).
 | GET | `/status` | Shield, daemon truth (`daemonRunning`, `converged`, `healthy`, `lastError`, `legacyBlockedAllowed`), allowances, vigilant and tab-sweep health |
 | GET | `/api/blocked` | Blocklist |
 | POST | `/api/block` | Add a domain. Body `{"domain"}`. Closes its tabs |
-| DELETE | `/api/block/:domain` | Remove a domain. Refused while hard-locked |
+| DELETE | `/api/block/:domain` | Remove a domain. Refused while a hard lock touches it (the domain, a parent, or a locked subdomain) |
 | GET | `/api/check/:domain` | `blocked` (OS truth) + `source`, `desiredBlocked`, `onBlocklist`, `allowanceMinutes`, `locked` |
 | POST | `/api/grant` | Timed access. Body `{"domain","minutes"(1–60),"reason","vigilant?","intent?"}`. Refuses public suffixes and anything a hard lock touches (the domain, a parent, or a locked subdomain) |
 | DELETE | `/api/grant/:domain` | End a grant now; closes its tabs |

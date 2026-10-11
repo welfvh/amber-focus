@@ -24,13 +24,13 @@ import {
   startVigilantForAllowance,
   grant,
   revoke,
+  unblock,
   type ApplyOutcome,
 } from './actions.js';
 import { parseDomain } from './policy.js';
 import { localClientsOnly } from './guard.js';
 import {
   addBlockedDomain,
-  removeBlockedDomain,
   getBlockedDomains,
   getEffectivelyBlockedDomains,
   getActiveAllowances,
@@ -38,8 +38,6 @@ import {
   isDomainBlocked,
   isShieldActive,
   setShieldActive,
-  isHardLocked,
-  getHardLockoutUntil,
   getActiveHardLockouts,
   addHardLockout,
   getRetreat,
@@ -132,16 +130,12 @@ app.delete('/api/block/:domain', route(async (req, res) => {
     res.status(400).json({ error: parsed.error });
     return;
   }
-  const domain = parsed.value;
-  if (isHardLocked(domain)) {
-    res.status(403).json({
-      error: `REFUSED: ${domain} is HARD LOCKED until ${getHardLockoutUntil(domain)}. Cannot unblock.`,
-    });
+  const result = await unblock(parsed.value);
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
     return;
   }
-  removeBlockedDomain(domain);
-  const outcome = await applyDesiredState(`unblock:${domain}`);
-  res.json({ success: true, domain, blocked: false, ...outcome });
+  res.json({ success: true, domain: parsed.value, blocked: false, ...result.outcome });
 }));
 
 // Check a domain: `blocked` is what the OS enforces right now; `desiredBlocked` is the intent.
