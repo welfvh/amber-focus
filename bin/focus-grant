@@ -17,7 +17,8 @@
 #     (grants are per exact registrable domain; users hit either TLD).
 #   - A full domain ("zalando.de") grants exactly that one + its sibling TLD if known.
 #   - Default duration: 10 min. Always timed (auto-reblocks) — this tool never uses DELETE.
-#   - --vigilant "<intent>" enables AI screenshot monitoring for high-risk sites.
+#   - Grants are 1–60 min; the server refuses longer ones.
+#   - --vigilant "<intent>" enables AI monitoring for high-risk sites.
 #   - Exit 3 when a domain is still blocked at the OS level; the receipt says which
 #     layer blocks it (daemon down, legacy hosts section, ...).
 #
@@ -41,7 +42,11 @@ fi
 ARG="$1"; shift
 
 # optional numeric minutes as the next token
-if [[ "${1:-}" =~ ^[0-9]+$ ]]; then MIN="$1"; shift; fi
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then MIN=$((10#$1)); shift; fi
+if (( MIN < 1 || MIN > 60 )); then
+  echo "✗ minutes must be 1–60 (got $MIN). Grant again when it runs out."
+  exit 1
+fi
 
 # remaining tokens = reason, with --vigilant "intent" pulled out
 while [[ $# -gt 0 ]]; do
@@ -166,7 +171,7 @@ VIG=$(curl -s -m4 "$API/api/vigilant/status" 2>/dev/null)
 if [[ -n "$VIGILANT" ]]; then
   if [[ "$(echo "$VIG" | json_field active)" == "true" ]]; then
     if [[ "$(echo "$VIG" | json_field degraded)" == "true" ]]; then
-      echo "  ! vigilant: active but DEGRADED (screenshots failing) — only the timer protects this grant"
+      echo "  ! vigilant: active but DEGRADED (monitoring failing) — only the timer protects this grant"
     else
       echo "  ✓ vigilant: monitoring"
     fi

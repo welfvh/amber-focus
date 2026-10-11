@@ -135,8 +135,7 @@ NEW_PID="$(wait_for_new_pid "$OLD_PID")" || {
 }
 echo "==> daemon back up (pid $NEW_PID, was $OLD_PID)"
 
-# The server announces config.json's path on every reconcile request; do it now so the
-# fresh daemon does not wait for the watchdog. Then print the health line that matters.
+# Ask the fresh daemon for a pass now, then print the health line that matters.
 sleep 1
 curl -s -m45 -X POST localhost:8053/api/reconcile >/dev/null 2>&1 || true
 curl -s -m5 localhost:8053/status | python3 -c 'import sys,json; d=json.load(sys.stdin); print("==> healthy=%s converged=%s shield=%s error=%s" % (d.get("healthy"), d.get("converged"), d.get("shieldActive"), d.get("lastError")))' || echo "==> server status unavailable"

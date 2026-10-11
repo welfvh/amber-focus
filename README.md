@@ -15,20 +15,18 @@ Everything is blocked by default. When you need access, you explain yourself to 
 ## How it works
 
 ```
-You ──Claude Code──> Server (:8053) ──JSON-RPC──> Daemon (root)
-                       │                              │
-                    state/config                 /etc/hosts
-                    grants/cooldowns             pf firewall
-                    vigilant mode                DNS flush
-                       │                         tab close
-                    REST API + MCP               connection kill
+You ──Claude Code──> focus-grant ──> Server (127.0.0.1:8053) ──> config.json ──> Daemon (root)
+                                       │                                          │
+                                     grants, locks, vigilant mode            /etc/hosts
+                                     browser tabs (close, reload)            pf firewall
+                                                                             DNS flush, connection kill
 ```
 
-**Server** (port 8053, user-space) — owns all state. REST API for local use, MCP endpoint for Claude.
+**Server** (user-space, `127.0.0.1:8053`) — edits the desired state in `config.json`, handles browser tabs, runs vigilant mode. It serves local command-line clients only: no web page can call it.
 
-**Daemon** (root, Unix socket) — stateless, applies blocking to the OS. Restarts freely; server re-pushes state.
+**Daemon** (root) — reads `config.json` and converges the OS to it every 10 seconds. Grants expire on time even when the server is down.
 
-**You talk to Claude, Claude talks to the server, the server tells the daemon what to block.**
+**You talk to Claude, Claude runs `focus-grant`, the daemon does the blocking.**
 
 ## Prerequisites
 
@@ -42,7 +40,7 @@ You ──Claude Code──> Server (:8053) ──JSON-RPC──> Daemon (root)
   /cc-keys add anthropic            # register the service
   /cc-keys set anthropic api_key sk-ant-your-key-here
   ```
-- Grant **Screen Recording** permission to your terminal app (System Settings > Privacy & Security > Screen Recording)
+- Allow **Automation** when macOS asks whether `node` may control your browser (the tab sweep and vigilant mode read and close tabs)
 
 ## Install
 
@@ -52,13 +50,13 @@ One command. Takes about 2 minutes.
 curl -fsSL amber.computer/focus/install | bash
 ```
 
-This clones the repo, builds the server and onboarding app, then launches a 4-screen setup wizard that installs the daemon, server, firewall rules, connects Claude Code, and drops you into your first session.
+This clones the repo to `~/dev/amber-focus`, builds it, asks which categories to block, and installs the daemon (needs your password once) and the server as background services.
 
 **Prerequisites:** macOS 14+, Node.js 18+ (`brew install node`), [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 
 **Already cloned?** Run directly:
 ```bash
-cd ~/dev/amber-focus && ./install.sh
+cd ~/dev/amber-focus && ./install-services.sh
 ```
 
 **Verify it's running:**
@@ -66,15 +64,14 @@ cd ~/dev/amber-focus && ./install.sh
 curl localhost:8053/status
 ```
 
-## CLI
+## Grant access
 
 ```bash
-amber-focus status          # shield state, blocked count, active grants
-amber-focus x 5             # grant Twitter/X for 5 minutes with vigilant mode
-amber-focus grant reddit.com 15 "checking r/rust"   # grant with reason
-amber-focus block example.com                        # add to blocklist
-amber-focus unblock example.com                      # remove from blocklist
+bin/focus-grant reddit 15 "checking r/rust async patterns"          # reddit.de + reddit.com, 15 min
+bin/focus-grant youtube 20 tours --vigilant "watching house tours"  # with vigilant mode
 ```
+
+Grants last 1 to 60 minutes and re-block on their own. Public suffixes (`com`, `co.uk`) and hard-locked domains are refused.
 
 ## Daily use
 
@@ -102,7 +99,7 @@ Claude will challenge your intent, then grant timed access with vigilant mode wa
 | Reading | 13 | Wattpad, FanFiction, Manga, Webtoons |
 | Dating | 9 | Tinder, Bumble, Hinge, Badoo |
 | Gambling | 19 | bet365, DraftKings, PokerStars |
-| Adult | 75,000+ | Comprehensive blocklist |
+| Adult | 63 | Pornhub, OnlyFans, Chaturbate |
 
 Email, banking, maps, dev tools — never touched.
 
@@ -111,7 +108,7 @@ Email, banking, maps, dev tools — never touched.
 1. **DNS** — `/etc/hosts` entries (0.0.0.0 for domain + www/mobile variants)
 2. **Firewall** — `pf` rules blocking IP ranges + dynamically resolved IPs
 3. **Connection kill** — `pfctl -k` terminates existing TCP connections immediately
-4. **Browser tabs** — AppleScript closes matching tabs in Safari, Arc, Chrome
+4. **Browser tabs** — every 10 seconds the server closes tabs on blocked sites in Chrome, Safari and Arc, even when the browser bypassed DNS
 5. **QUIC** — UDP port 443 blocked to prevent HTTP/3 fallback
 
 ## Vigilant mode
@@ -124,22 +121,6 @@ When a grant is active with vigilant mode:
 4. All evaluations logged locally to `~/.config/amber-focus/vigilant-log.json`
 
 API key from macOS Keychain via [cc-keys](https://github.com/welfvh/cc-keys): `cc/anthropic` / `api_key`.
-
-## MCP tools
-
-9 tools at `/mcp` (Bearer token auth):
-
-| Tool | Purpose |
-|------|---------|
-| `amber_status` | Shield state, daemon health, blocked count |
-| `amber_blocked_list` | All blocked domains |
-| `amber_check_domain` | Check if a domain is blocked/granted/locked |
-| `amber_allowances` | Active grants with expiry times |
-| `amber_delayed_list` | Delayed domains |
-| `amber_grant` | Grant timed access (optional vigilant mode) |
-| `amber_block` | Block a domain |
-| `amber_unblock` | Permanently unblock (refuses hard-locked) |
-| `amber_vigilant_status` | Current monitoring session |
 
 ## Logs
 

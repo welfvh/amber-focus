@@ -1,7 +1,10 @@
 #!/bin/bash
-# amber-focus installer — sets up daemon and server to run at boot.
+# amber-focus service installer — sets up daemon and server to run at boot.
 # Generates plists from templates, detects node path, builds from source,
-# and optionally configures block categories.
+# and configures block categories on first install. install.sh runs this
+# after cloning; run it directly to reinstall the services.
+#
+# Usage: ./install-services.sh [--all | social,video,...]
 
 set -e
 
@@ -42,17 +45,6 @@ echo "Build complete."
 # --- 4. Config directory ---
 mkdir -p "$CONFIG_DIR"
 
-# --- 5. MCP token ---
-TOKEN_FILE="$CONFIG_DIR/mcp-token"
-if [ ! -f "$TOKEN_FILE" ]; then
-    uuidgen | tr '[:upper:]' '[:lower:]' > "$TOKEN_FILE"
-    chmod 600 "$TOKEN_FILE"
-    echo "Generated MCP token: $TOKEN_FILE"
-else
-    echo "MCP token exists: $TOKEN_FILE"
-fi
-MCP_TOKEN="$(cat "$TOKEN_FILE")"
-
 # --- 6. Block categories ---
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
     if [ "$1" = "--all" ]; then
@@ -75,21 +67,21 @@ if [ ! -f "$CONFIG_DIR/config.json" ]; then
         echo "  adult    - Pornographic sites (60+ domains)"
         echo ""
         echo "Default: ALL categories enabled"
-        read -p "Categories to enable (comma-separated, or press Enter for ALL): " CATEGORIES
+        read -p "Categories to enable (comma-separated, or press Enter for ALL): " CATEGORIES < /dev/tty
         if [ -z "$CATEGORIES" ]; then
             CATEGORIES="social,video,news,shopping,sports,gaming,memes,reading,dating,gambling,adult"
         fi
     fi
     echo "Enabled categories: $CATEGORIES"
-    # The server will initialize config.json with these categories on first run.
-    # Write a minimal config so the categories are picked up.
-    IFS=',' read -ra CATS <<< "$CATEGORIES"
-    CAT_JSON=$(printf '"%s",' "${CATS[@]}" | sed 's/,$//')
-    cat > "$CONFIG_DIR/config.json" << EOF
-{
-  "enabledCategories": [$CAT_JSON]
-}
-EOF
+    # Write the blocklist for the chosen categories; the server keeps it from here.
+    node --input-type=module -e '
+      import fs from "fs";
+      import { domainsForCategories } from "./dist/store.js";
+      const [file, cats] = process.argv.slice(1);
+      const blockedDomains = domainsForCategories(cats.split(",").map(c => c.trim()));
+      fs.writeFileSync(file, JSON.stringify({ blockedDomains }, null, 2));
+      console.log(`Blocking ${blockedDomains.length} domains`);
+    ' "$CONFIG_DIR/config.json" "$CATEGORIES"
 else
     echo "Config exists: $CONFIG_DIR/config.json (preserving)"
 fi
@@ -142,14 +134,7 @@ if curl -s localhost:8053/status | grep -q "running"; then
     echo "Logs:      $CONFIG_DIR/server.log"
     echo "           /var/log/amber-focus-daemon.log (sudo)"
     echo ""
-    echo "--- Claude Web Connection ---"
-    echo "To connect Claude Web, set up a Cloudflare Tunnel or use locally."
-    echo "MCP Token: $MCP_TOKEN"
-    echo ""
-    echo "--- Claude Code Connection ---"
-    echo "claude mcp add --transport http --scope user \\"
-    echo "  --header \"Authorization: Bearer $MCP_TOKEN\" \\"
-    echo "  amber-focus http://localhost:8053/mcp"
+    echo "Grant timed access: $SCRIPT_DIR/bin/focus-grant <site> [minutes] [reason]"
     echo ""
     echo "--- Optional: pf firewall (IP-level blocking) ---"
     echo "sudo $SCRIPT_DIR/enable-pf.sh"
