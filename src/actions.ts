@@ -1,30 +1,35 @@
 /**
- * Shared actions used by both REST (server.ts) and MCP (mcp.ts).
+ * Actions behind the REST API (server.ts).
  *
  * The server only edits desired state (store.ts → config.json) and then asks
  * the daemon to converge. It reports OS truth from /etc/hosts, never from its
- * own store alone.
+ * own store alone. Browser tabs are handled here, as the user (browser.ts).
  */
 
 import fs from 'fs';
 import {
-  CONFIG_FILE,
+  grantAllowance,
   revokeAllowance,
   isDomainBlocked,
   isOnBlocklist,
   isHardLocked,
+  lockoutCoveredBy,
   getAllowanceRemaining,
   isShieldActive,
   type Allowance,
 } from './store.js';
 import { reconcile, getDaemonStatus } from './daemon-client.js';
+import { closeTabs, reloadTabs } from './browser.js';
 import { buildHostsIndex, type HostsBlockSource, type HostsIndex } from './shared/reconcile.js';
+import { parseDomain, parseMinutes, parseText } from './policy.js';
 import type { DaemonStatus } from './shared/ipc-types.js';
 import { startSession as startVigilantSession, stopSessionsForDomain } from './vigilant.js';
 
 const HOSTS_PATH = '/etc/hosts';
 /** A pass older than this means the daemon loop is not running. */
 export const RECONCILE_STALE_MS = 60_000;
+const MAX_REASON_LENGTH = 500;
+const MAX_INTENT_LENGTH = 300;
 
 export interface ApplyOutcome {
   daemonRunning: boolean;
@@ -35,7 +40,7 @@ export interface ApplyOutcome {
 
 /** Ask the daemon to converge the OS to the current desired state. Never throws. */
 export async function applyDesiredState(reason: string): Promise<ApplyOutcome> {
-  const status = await reconcile(CONFIG_FILE, reason);
+  const status = await reconcile(reason);
   if (!status) {
     console.error(`[apply] daemon unreachable (${reason}) — desired state saved, OS unchanged`);
     return { daemonRunning: false, applied: false, error: 'daemon unreachable' };
@@ -102,24 +107,71 @@ export async function describeDomain(domain: string): Promise<DomainReport> {
   };
 }
 
-/** Vigilant drift: revoke the grant and converge. The daemon re-blocks and closes tabs. */
-export async function handleVigilantViolation(domain: string, bumpVersion?: () => void): Promise<void> {
-  console.log(`[vigilant] Violation for ${domain} — revoking grant`);
+// --- Grants ---
+
+export interface GrantRequest {
+  domain: unknown;
+  minutes: unknown;
+  reason?: unknown;
+  /** Present when the grant must run under vigilant monitoring. */
+  intent?: unknown;
+}
+
+export type GrantResult =
+  | { ok: true; allowance: Allowance; outcome: ApplyOutcome; tabsReloaded: number; vigilantSessionId: string | null }
+  | { ok: false; status: 400 | 403; error: string };
+
+/** The one grant path: validate, check locks, save, converge, reload tabs, start monitoring. */
+export async function grant(req: GrantRequest): Promise<GrantResult> {
+  const domain = parseDomain(req.domain);
+  if (!domain.ok) return { ok: false, status: 400, error: domain.error };
+  const minutes = parseMinutes(req.minutes);
+  if (!minutes.ok) return { ok: false, status: 400, error: minutes.error };
+  const reason = parseText(req.reason, 'reason', MAX_REASON_LENGTH);
+  if (!reason.ok) return { ok: false, status: 400, error: reason.error };
+  const intent = parseText(req.intent, 'intent', MAX_INTENT_LENGTH);
+  if (!intent.ok) return { ok: false, status: 400, error: intent.error };
+
+  const lock = lockoutCoveredBy(domain.value);
+  if (lock) {
+    return {
+      ok: false,
+      status: 403,
+      error: `REFUSED: ${domain.value} touches ${lock.domain}, HARD LOCKED until ${lock.until}. No exceptions.`,
+    };
+  }
+
+  const allowance = grantAllowance(domain.value, minutes.value, reason.value ?? 'Granted via API', intent.value);
+  const outcome = await applyDesiredState(`grant:${domain.value}`);
+  const reloaded = outcome.applied ? await reloadTabs([domain.value]) : { count: 0, errors: [] };
+  const vigilantSessionId = startVigilantForAllowance(allowance);
+  return { ok: true, allowance, outcome, tabsReloaded: reloaded.count, vigilantSessionId };
+}
+
+/** End a grant now: drop the allowance, converge, close the domain's tabs. */
+export async function revoke(domain: string, reason: string): Promise<ApplyOutcome> {
   revokeAllowance(domain);
   stopSessionsForDomain(domain);
-  bumpVersion?.();
-  await applyDesiredState(`vigilant-violation:${domain}`);
+  const outcome = await applyDesiredState(`${reason}:${domain}`);
+  if (isDomainBlocked(domain)) await closeTabs([domain]);
+  return outcome;
+}
+
+/** Vigilant drift: revoke the grant and converge. */
+export async function handleVigilantViolation(domain: string): Promise<void> {
+  console.log(`[vigilant] Violation for ${domain} — revoking grant`);
+  await revoke(domain, 'vigilant-violation');
 }
 
 /** Start (or resume after a restart) vigilant monitoring for an allowance that carries an intent. */
-export function startVigilantForAllowance(allowance: Allowance, bumpVersion?: () => void): string | null {
+export function startVigilantForAllowance(allowance: Allowance): string | null {
   if (!allowance.vigilantIntent) return null;
   try {
     const id = startVigilantSession(
       allowance.domain,
       allowance.vigilantIntent,
       allowance.expiresAt,
-      () => handleVigilantViolation(allowance.domain, bumpVersion),
+      () => handleVigilantViolation(allowance.domain),
     );
     console.log(`[vigilant] Session ${id} for ${allowance.domain}`);
     return id;

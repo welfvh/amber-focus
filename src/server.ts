@@ -1,11 +1,14 @@
 /**
- * Amber Focus Standalone Server
- * No Electron - just a simple HTTP API on port 8053.
+ * Amber Focus server — the local HTTP API on 127.0.0.1:8053.
  *
  * Sole editor of desired state (store.ts → config.json). The privileged daemon
  * reads that file and converges the OS to it on its own loop; this server only
- * asks it to converge now (daemon-client.ts) and reports OS truth (actions.ts).
- * Also exposes /api/filter-state for the NE system extension.
+ * asks it to converge now (daemon-client.ts), reports OS truth (actions.ts),
+ * and handles browser tabs as the user (browser.ts).
+ *
+ * Only local, non-browser clients are served: the Host header must be the
+ * loopback address, and any request that carries an Origin header (every
+ * cross-site fetch or form post a web page can make) is refused.
  *
  * Start with: npx tsx src/server.ts
  * Or build: npx tsc && node dist/server.js
@@ -13,67 +16,50 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
-import { execFile } from 'child_process';
 import {
   applyDesiredState,
   describeDomain,
   osBlockState,
   daemonHealthy,
   startVigilantForAllowance,
+  grant,
+  revoke,
+  type ApplyOutcome,
 } from './actions.js';
+import { parseDomain } from './policy.js';
+import { localClientsOnly } from './guard.js';
 import {
-  grantAllowance,
-  revokeAllowance,
   addBlockedDomain,
   removeBlockedDomain,
   getBlockedDomains,
   getEffectivelyBlockedDomains,
   getActiveAllowances,
   pruneExpiredAllowances,
+  isDomainBlocked,
   isShieldActive,
   setShieldActive,
-  isDomainDelayed,
-  getDelaySeconds,
-  recordDelayAccess,
-  isInActiveSession,
-  updateSessionAccess,
-  getDelayedDomains,
-  addDelayedDomain,
-  removeDelayedDomain,
-  getBlockedPaths,
-  addBlockedPath,
-  removeBlockedPath,
   isHardLocked,
   getHardLockoutUntil,
   getActiveHardLockouts,
   addHardLockout,
-  removeHardLockout,
-  getProfile,
-  setProfile,
-  setEnabledCategories,
-  getCooldowns,
-  setCooldowns,
-  isOnboardingComplete,
-  setOnboardingComplete,
   getRetreat,
   setRetreat,
   disableRetreat,
 } from './store.js';
-import {
-  startProxy,
-  getCACertPath,
-  setBlockedPaths,
-  addBlockedPath as proxyAddBlockedPath,
-  removeBlockedPath as proxyRemoveBlockedPath,
-} from './proxy.js';
 import { getDaemonStatus, flushDns } from './daemon-client.js';
-import { collectAllDomainsWithVariants } from './shared/domains.js';
-import { mountMCP } from './mcp.js';
+import { closeTabs } from './browser.js';
+import { notify } from './notify.js';
 import {
   stopSessionsForDomain,
   getStatus as getVigilantStatus,
   getRecentLog as getVigilantLog,
 } from './vigilant.js';
+
+// Timestamp every log line (server.log is the only record of what happened).
+for (const level of ['log', 'error'] as const) {
+  const write = console[level].bind(console);
+  console[level] = (...args: unknown[]) => write(new Date().toISOString(), ...args);
+}
 
 // A daemon hiccup must never take the API down.
 process.on('unhandledRejection', (err) => {
@@ -87,16 +73,8 @@ const app = express();
 const API_PORT = 8053;
 const EXPIRY_POLL_MS = 30_000;
 const WATCHDOG_POLL_MS = 30_000;
+const TAB_SWEEP_MS = 10_000;
 const ALERT_COOLDOWN_MS = 10 * 60_000;
-
-// Version counter for /api/filter-state — NE extension polls this
-// and can skip refetch if version hasn't changed.
-let filterStateVersion = 0;
-
-/** Bump filter state version on every blocking state change. */
-function bumpVersion(): void {
-  filterStateVersion++;
-}
 
 /** Express 4 drops async rejections; route them to the error handler instead. */
 type AsyncHandler = (req: Request, res: Response) => Promise<void> | void;
@@ -104,15 +82,9 @@ const route = (fn: AsyncHandler) => (req: Request, res: Response, next: NextFunc
   Promise.resolve(fn(req, res)).catch(next);
 };
 
-app.use(express.json());
+app.use(localClientsOnly);
 
-// CORS for local requests
-app.use((_req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  next();
-});
+app.use(express.json());
 
 // Status endpoint — desired state plus daemon truth
 app.get('/status', route(async (_req, res) => {
@@ -130,19 +102,9 @@ app.get('/status', route(async (_req, res) => {
     blockedDomains: getBlockedDomains().length,
     activeAllowances: getActiveAllowances(),
     vigilant: { active: vigilant.active, degraded: vigilant.degraded },
+    tabSweep: { lastError: tabSweepError },
   });
 }));
-
-// Filter state endpoint for NE system extension
-app.get('/api/filter-state', (_req: Request, res: Response) => {
-  const blocked = getEffectivelyBlockedDomains();
-  const allDomains = collectAllDomainsWithVariants(blocked);
-  res.json({
-    blockedDomains: allDomains,
-    shieldActive: isShieldActive(),
-    version: filterStateVersion,
-  });
-});
 
 // List blocked domains
 app.get('/api/blocked', (_req: Request, res: Response) => {
@@ -151,87 +113,81 @@ app.get('/api/blocked', (_req: Request, res: Response) => {
 
 // Add domain to blocklist
 app.post('/api/block', route(async (req, res) => {
-  const { domain } = req.body;
-  if (!domain) {
-    res.status(400).json({ error: 'domain required' });
+  const parsed = parseDomain(req.body?.domain);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
     return;
   }
+  const domain = parsed.value;
   addBlockedDomain(domain);
-  bumpVersion();
   const outcome = await applyDesiredState(`block:${domain}`);
-  res.json({ success: true, domain, blocked: true, ...outcome });
+  const closed = isDomainBlocked(domain) ? await closeTabs([domain]) : { count: 0 };
+  res.json({ success: true, domain, blocked: true, tabsClosed: closed.count, ...outcome });
 }));
 
 // Remove domain from blocklist
 app.delete('/api/block/:domain', route(async (req, res) => {
-  const { domain } = req.params;
-
-  // Hard lockout — refuse to unblock domains with active lockouts
+  const parsed = parseDomain(req.params.domain);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const domain = parsed.value;
   if (isHardLocked(domain)) {
-    const until = getHardLockoutUntil(domain);
     res.status(403).json({
-      error: `REFUSED: ${domain} is HARD LOCKED until ${until}. Cannot unblock.`,
+      error: `REFUSED: ${domain} is HARD LOCKED until ${getHardLockoutUntil(domain)}. Cannot unblock.`,
     });
     return;
   }
-
   removeBlockedDomain(domain);
-  bumpVersion();
   const outcome = await applyDesiredState(`unblock:${domain}`);
   res.json({ success: true, domain, blocked: false, ...outcome });
 }));
 
 // Check a domain: `blocked` is what the OS enforces right now; `desiredBlocked` is the intent.
 app.get('/api/check/:domain', route(async (req, res) => {
-  res.json(await describeDomain(req.params.domain));
+  const parsed = parseDomain(req.params.domain);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  res.json(await describeDomain(parsed.value));
 }));
 
-// Grant temporary access (optionally with vigilant monitoring)
+// Grant temporary access (optionally with vigilant monitoring: `intent`)
 app.post('/api/grant', route(async (req, res) => {
-  const { domain, minutes, reason, vigilant, intent } = req.body;
-  if (!domain || !minutes) {
-    res.status(400).json({ error: 'domain and minutes required' });
+  const { domain, minutes, reason, vigilant, intent } = req.body ?? {};
+  if (vigilant && !intent) {
+    res.status(400).json({ error: 'vigilant grants need an intent' });
     return;
   }
-
-  // Hard lockout — refuse domains with active lockouts
-  if (isHardLocked(domain)) {
-    const until = getHardLockoutUntil(domain);
-    res.status(403).json({
-      error: `REFUSED: ${domain} is HARD LOCKED until ${until}. No exceptions.`,
-    });
+  const result = await grant({ domain, minutes, reason, intent: vigilant ? intent : undefined });
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
     return;
   }
-
-  const allowance = grantAllowance(
-    domain,
-    minutes,
-    reason || 'Granted via API',
-    vigilant && intent ? String(intent) : undefined,
-  );
-  bumpVersion();
-  const outcome = await applyDesiredState(`grant:${domain}`);
-  const vigilantSessionId = startVigilantForAllowance(allowance, bumpVersion);
-
+  const { allowance, outcome, tabsReloaded, vigilantSessionId } = result;
   res.json({
     success: true,
     domain: allowance.domain,
-    minutes,
+    minutes: allowance.grantedMinutes,
     expiresAt: allowance.expiresAt,
     ...outcome,
     effective: osBlockState(allowance.domain),
+    tabsReloaded,
     ...(vigilantSessionId ? { vigilant: true, vigilantSessionId } : {}),
   });
 }));
 
 // Revoke allowance
 app.delete('/api/grant/:domain', route(async (req, res) => {
-  const { domain } = req.params;
-  revokeAllowance(domain);
-  stopSessionsForDomain(domain);
-  bumpVersion();
-  const outcome = await applyDesiredState(`revoke:${domain}`);
-  res.json({ success: true, domain, revoked: true, ...outcome });
+  const parsed = parseDomain(req.params.domain);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const outcome = await revoke(parsed.value, 'revoke');
+  res.json({ success: true, domain: parsed.value, revoked: true, ...outcome });
 }));
 
 // List active allowances
@@ -242,15 +198,20 @@ app.get('/api/allowances', (_req: Request, res: Response) => {
 // Enable shield
 app.post('/api/shield/enable', route(async (_req, res) => {
   setShieldActive(true);
-  bumpVersion();
   const outcome = await applyDesiredState('shield-enable');
   res.json({ success: true, shieldActive: true, ...outcome });
 }));
 
-// Disable shield
+// Disable shield — never while a hard lock is active: it would open the locked domains too.
 app.post('/api/shield/disable', route(async (_req, res) => {
+  const locks = getActiveHardLockouts();
+  if (locks.length > 0) {
+    res.status(403).json({
+      error: `REFUSED: ${locks.length} hard lock(s) active (${locks.map(l => l.domain).join(', ')}). The shield stays on.`,
+    });
+    return;
+  }
   setShieldActive(false);
-  bumpVersion();
   const outcome = await applyDesiredState('shield-disable');
   res.json({ success: true, shieldActive: false, ...outcome });
 }));
@@ -261,95 +222,11 @@ app.post('/api/reconcile', route(async (_req, res) => {
   res.status(outcome.daemonRunning ? 200 : 503).json({ success: outcome.applied, ...outcome });
 }));
 
-// List delayed domains
-app.get('/api/delayed', (_req: Request, res: Response) => {
-  res.json({ domains: getDelayedDomains() });
-});
+// === Retreat mode (Mac app allowlist, enforced by retreat-enforcer) ===
 
-// Add domain to delay list
-app.post('/api/delay', (req: Request, res: Response) => {
-  const { domain } = req.body;
-  if (!domain) {
-    res.status(400).json({ error: 'domain required' });
-    return;
-  }
-  addDelayedDomain(domain);
-  res.json({ success: true, domain, delayed: true });
-});
-
-// Remove from delay list
-app.delete('/api/delay/:domain', (req: Request, res: Response) => {
-  const { domain } = req.params;
-  removeDelayedDomain(domain);
-  res.json({ success: true, domain, delayed: false });
-});
-
-// Check delay status
-app.get('/api/check-delay/:domain', (req: Request, res: Response) => {
-  const { domain } = req.params;
-
-  if (!isDomainDelayed(domain)) {
-    res.json({ delayed: false, passThrough: true });
-    return;
-  }
-
-  if (isInActiveSession(domain)) {
-    updateSessionAccess(domain);
-    res.json({ delayed: true, inSession: true, passThrough: true });
-    return;
-  }
-
-  const delaySeconds = getDelaySeconds(domain);
-  res.json({
-    delayed: true,
-    inSession: false,
-    delaySeconds,
-  });
-});
-
-// Record delay completion
-app.post('/api/delay-complete', (req: Request, res: Response) => {
-  const { domain } = req.body;
-  if (!domain) {
-    res.status(400).json({ error: 'domain required' });
-    return;
-  }
-  recordDelayAccess(domain);
-  res.json({ success: true, message: 'Access recorded' });
-});
-
-// === Path blocking API ===
-
-// List blocked paths
-app.get('/api/paths', (_req: Request, res: Response) => {
-  res.json({ paths: getBlockedPaths() });
-});
-
-// Add blocked path
-app.post('/api/path', (req: Request, res: Response) => {
-  const { domain, path } = req.body;
-  if (!domain || !path) {
-    res.status(400).json({ error: 'domain and path required' });
-    return;
-  }
-  addBlockedPath(domain, path);
-  proxyAddBlockedPath(domain, path);
-  res.json({ success: true, domain, path, blocked: true });
-});
-
-// Remove blocked path
-app.delete('/api/path', (req: Request, res: Response) => {
-  const { domain, path } = req.body;
-  if (!domain || !path) {
-    res.status(400).json({ error: 'domain and path required' });
-    return;
-  }
-  removeBlockedPath(domain, path);
-  proxyRemoveBlockedPath(domain, path);
-  res.json({ success: true, domain, path, blocked: false });
-});
-
-// === Retreat mode (Mac app allowlist) ===
+const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
+const isBundleIdList = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every(id => typeof id === 'string' && BUNDLE_ID.test(id));
 
 app.get('/api/retreat', (_req: Request, res: Response) => {
   res.json(getRetreat());
@@ -357,7 +234,7 @@ app.get('/api/retreat', (_req: Request, res: Response) => {
 
 app.post('/api/retreat', (req: Request, res: Response) => {
   const { endDate, windows, allowlist, blocklist } = req.body || {};
-  if (typeof endDate !== 'string' || !endDate) {
+  if (typeof endDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
     res.status(400).json({ error: 'endDate required (YYYY-MM-DD)' });
     return;
   }
@@ -366,32 +243,28 @@ app.post('/api/retreat', (req: Request, res: Response) => {
     return;
   }
   for (const w of windows) {
-    if (typeof w?.start !== 'number' || typeof w?.end !== 'number' ||
+    if (!Number.isInteger(w?.start) || !Number.isInteger(w?.end) ||
         w.start < 0 || w.start >= 1440 || w.end < 0 || w.end >= 1440) {
-      res.status(400).json({ error: 'each window needs numeric start,end in 0..1439' });
+      res.status(400).json({ error: 'each window needs whole-number start,end in 0..1439' });
       return;
     }
   }
-  if (!Array.isArray(allowlist)) {
+  if (!isBundleIdList(allowlist)) {
     res.status(400).json({ error: 'allowlist must be an array of bundle IDs' });
     return;
   }
-  if (blocklist !== undefined && !Array.isArray(blocklist)) {
+  if (blocklist !== undefined && !isBundleIdList(blocklist)) {
     res.status(400).json({ error: 'blocklist must be an array of bundle IDs' });
     return;
   }
-  setRetreat({ enabled: true, endDate, windows, allowlist, blocklist: blocklist ?? [] });
+  const cleanWindows = windows.map((w: { start: number; end: number }) => ({ start: w.start, end: w.end }));
+  setRetreat({ enabled: true, endDate, windows: cleanWindows, allowlist, blocklist: blocklist ?? [] });
   res.json({ success: true, retreat: getRetreat() });
 });
 
 app.delete('/api/retreat', (_req: Request, res: Response) => {
   disableRetreat();
   res.json({ success: true, retreat: getRetreat() });
-});
-
-// Get CA cert path for installation
-app.get('/api/proxy/ca', (_req: Request, res: Response) => {
-  res.json({ path: getCACertPath() });
 });
 
 // Flush DNS cache (calls daemon which runs as root)
@@ -406,105 +279,36 @@ app.post('/api/flush-dns', route(async (_req, res) => {
 
 // === Vigilant mode API ===
 
-// Get vigilant monitoring status
 app.get('/api/vigilant/status', (_req: Request, res: Response) => {
   res.json(getVigilantStatus());
 });
 
-// Get recent vigilant evaluations
 app.get('/api/vigilant/log', (req: Request, res: Response) => {
-  const count = parseInt(req.query.count as string) || 20;
+  const count = Math.min(parseInt(req.query.count as string) || 20, 200);
   res.json({ evaluations: getVigilantLog(count) });
 });
 
-// === Hard lockout management ===
+// === Hard lockouts: added here, never removed before they expire ===
 
-// List active hard lockouts
 app.get('/api/locks', (_req: Request, res: Response) => {
   res.json({ lockouts: getActiveHardLockouts() });
 });
 
-// Add a hard lockout
 app.post('/api/lock', (req: Request, res: Response) => {
-  const { domain, until } = req.body;
-  if (!domain || !until) {
-    res.status(400).json({ error: 'domain and until (ISO date) required' });
+  const parsed = parseDomain(req.body?.domain);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
     return;
   }
-  addHardLockout(domain, until);
-  res.json({ success: true, domain, until });
-});
-
-// Remove a hard lockout
-app.delete('/api/lock/:domain', (req: Request, res: Response) => {
-  const { domain } = req.params;
-  removeHardLockout(domain);
-  res.json({ success: true, domain, removed: true });
-});
-
-// === Setup API (used by native macOS app during onboarding) ===
-
-// Get onboarding status
-app.get('/api/setup/status', (_req: Request, res: Response) => {
-  res.json({
-    complete: isOnboardingComplete(),
-    profile: getProfile(),
-    cooldowns: getCooldowns(),
-  });
-});
-
-// Save user profile (triggers, pain, purpose)
-app.post('/api/setup/profile', (req: Request, res: Response) => {
-  const { triggers, pain, purpose } = req.body;
-  if (!triggers || !Array.isArray(triggers)) {
-    res.status(400).json({ error: 'triggers (array) required' });
+  const until = req.body?.until;
+  const untilMs = typeof until === 'string' ? Date.parse(until) : NaN;
+  if (Number.isNaN(untilMs) || untilMs <= Date.now()) {
+    res.status(400).json({ error: 'until must be a future ISO date' });
     return;
   }
-  setProfile({
-    triggers,
-    pain: pain || '',
-    purpose: purpose || '',
-    completedAt: new Date().toISOString(),
-  });
-  res.json({ success: true });
+  addHardLockout(parsed.value, until);
+  res.json({ success: true, domain: parsed.value, until });
 });
-
-// Configure enabled categories + exceptions
-app.post('/api/setup/categories', route(async (req, res) => {
-  const { categories, exceptions } = req.body;
-  if (!categories || !Array.isArray(categories)) {
-    res.status(400).json({ error: 'categories (array) required' });
-    return;
-  }
-  setEnabledCategories(categories, exceptions || []);
-  bumpVersion();
-  const outcome = await applyDesiredState('categories');
-  res.json({ success: true, categories, exceptions: exceptions || [], ...outcome });
-}));
-
-// Configure cooldowns for high-risk sites
-app.post('/api/setup/cooldowns', (req: Request, res: Response) => {
-  const { cooldowns } = req.body;
-  if (!cooldowns || !Array.isArray(cooldowns)) {
-    res.status(400).json({ error: 'cooldowns (array) required' });
-    return;
-  }
-  setCooldowns(cooldowns);
-  res.json({ success: true, cooldowns });
-});
-
-// Activate shield (final onboarding step)
-app.post('/api/setup/activate', route(async (_req, res) => {
-  setShieldActive(true);
-  setOnboardingComplete(true);
-  bumpVersion();
-  const outcome = await applyDesiredState('activate');
-  if (outcome.applied) {
-    res.json({ success: true, shieldActive: true, blockedDomains: getBlockedDomains().length, ...outcome });
-  } else {
-    res.status(503).json({ ...outcome, message: 'Shield set, but the daemon did not apply it — is it running?' });
-  }
-}));
 
 // Errors from async routes land here instead of killing the process.
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -513,7 +317,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (!res.headersSent) res.status(500).json({ error: message });
 });
 
-// --- Allowance expiry: prune the store, stop monitoring, converge. ---
+// --- Allowance expiry: prune the store, stop monitoring, converge, close tabs. ---
 // The daemon re-blocks expired domains on its own loop too; this pass only
 // keeps config.json tidy and makes the change immediate.
 async function checkAllowanceExpiry(): Promise<void> {
@@ -521,9 +325,30 @@ async function checkAllowanceExpiry(): Promise<void> {
   if (expired.length === 0) return;
   const domains = expired.map(a => a.domain);
   console.log(`Allowances expired for: ${domains.join(', ')}`);
-  bumpVersion();
   for (const domain of domains) stopSessionsForDomain(domain);
-  await applyDesiredState(`expiry:${domains.join(',')}`);
+  const outcome: ApplyOutcome = await applyDesiredState(`expiry:${domains.join(',')}`);
+  if (outcome.applied) await closeTabs(domains.filter(isDomainBlocked));
+}
+
+// --- Tab sweep: closes tabs on blocked domains, even when a browser bypassed DNS (DoH, cache). ---
+let sweeping = false;
+let tabSweepError: string | null = null;
+
+async function sweepTabs(): Promise<void> {
+  if (sweeping || !isShieldActive()) return;
+  sweeping = true;
+  try {
+    const { count, errors } = await closeTabs(getEffectivelyBlockedDomains());
+    if (count > 0) console.log(`Tab sweep closed ${count} blocked tab(s)`);
+    const error = errors.length > 0 ? errors.join('; ') : null;
+    if (error !== tabSweepError) {
+      if (error) console.error(`[tab-sweep] ${error}`);
+      else console.log('[tab-sweep] browsers reachable again');
+      tabSweepError = error;
+    }
+  } finally {
+    sweeping = false;
+  }
 }
 
 // --- Daemon watchdog: the server cannot restart the root daemon, but it can say so loudly. ---
@@ -531,21 +356,9 @@ let unhealthyChecks = 0;
 let lastAlertAt = 0;
 let wasHealthy = true;
 
-function notify(title: string, body: string): void {
-  const script = `display notification "${body.replace(/"/g, '\\"')}" with title "${title}"`;
-  execFile('/usr/bin/osascript', ['-e', script], () => {});
-}
-
 async function watchdog(): Promise<void> {
-  let status = await getDaemonStatus();
-  if (status && status.configPath === null) {
-    // Fresh daemon (redeploy, reinstall) that has not been told where config.json lives.
-    console.log('[watchdog] daemon has no config path — announcing it');
-    await applyDesiredState('announce-config');
-    status = await getDaemonStatus();
-  }
-  const healthy = daemonHealthy(status);
-  if (healthy) {
+  const status = await getDaemonStatus();
+  if (daemonHealthy(status)) {
     if (!wasHealthy) console.log('[watchdog] daemon healthy again');
     wasHealthy = true;
     unhealthyChecks = 0;
@@ -563,46 +376,27 @@ async function watchdog(): Promise<void> {
   }
 }
 
-// Start server
 async function start(): Promise<void> {
   // Converge on boot; the outcome is informational — the daemon loop keeps trying.
   const boot = await applyDesiredState('server-boot');
   if (!boot.daemonRunning) {
     console.error('Warning: daemon not running. Blocks stay as they are until it is back.');
   }
-  bumpVersion();
 
   // Resume vigilant monitoring for grants that survived a server restart
   for (const allowance of getActiveAllowances()) {
-    startVigilantForAllowance(allowance, bumpVersion);
+    startVigilantForAllowance(allowance);
   }
-
-  // Load blocked paths into proxy
-  const paths = getBlockedPaths();
-  const pathMap = new Map<string, string[]>();
-  for (const [domain, patterns] of Object.entries(paths)) {
-    pathMap.set(domain, patterns);
-  }
-  setBlockedPaths(pathMap);
-
-  // Start proxy server
-  startProxy();
-  console.log('   Configure system proxy: System Settings > Network > Wi-Fi > Details > Proxies');
-  console.log('   Set HTTP & HTTPS proxy to: 127.0.0.1:8080');
-
-  // Mount MCP endpoint for Claude Web access via Cloudflare Tunnel
-  mountMCP(app, isShieldActive);
 
   setInterval(() => { checkAllowanceExpiry().catch(err => console.error('[expiry]', err)); }, EXPIRY_POLL_MS);
   setInterval(() => { watchdog().catch(err => console.error('[watchdog]', err)); }, WATCHDOG_POLL_MS);
+  setInterval(() => { sweepTabs().catch(err => console.error('[tab-sweep]', err)); }, TAB_SWEEP_MS);
 
-  // Start HTTP server
   const server = http.createServer(app);
   server.listen(API_PORT, '127.0.0.1', () => {
     console.log(`Amber Focus API running on http://127.0.0.1:${API_PORT}`);
     console.log(`   Shield active: ${isShieldActive()} (daemon ${boot.daemonRunning ? (boot.applied ? 'converged' : 'not converged') : 'unreachable'})`);
     console.log(`   Blocked domains: ${getBlockedDomains().length} (${getEffectivelyBlockedDomains().length} effective)`);
-    console.log(`   Delayed domains: ${getDelayedDomains().length}`);
   });
 }
 

@@ -2,9 +2,10 @@
  * Persistent storage for Amber Focus (standalone, no Electron).
  * Uses a simple JSON file for persistence.
  *
- * Sole owner of application state: blocked domains, allowances,
- * delay sessions, hard lockouts, etc. The server reads from here
- * and tells the daemon what to enforce.
+ * Sole owner of application state: blocked domains, allowances, hard
+ * lockouts, shield and retreat settings. The daemon and the retreat enforcer
+ * read config.json directly. Keys this module no longer knows are kept as
+ * they are on every save.
  */
 
 import fs from 'fs';
@@ -24,29 +25,9 @@ export interface Allowance {
   vigilantIntent?: string;
 }
 
-interface DelaySession {
-  domain: string;
-  lastAccess: number;
-  accessCount: number;
-  lastResetDate: string;
-}
-
 interface HardLockout {
   domain: string;
   until: string; // ISO date string, e.g. "2026-03-01"
-}
-
-interface UserProfile {
-  triggers: string[];
-  pain: string;
-  purpose: string;
-  completedAt: string; // ISO timestamp
-}
-
-interface CooldownConfig {
-  id: string;       // e.g. "twitter"
-  domains: string;  // e.g. "twitter.com, x.com"
-  duration: string; // e.g. "6h"
 }
 
 interface RetreatWindow {
@@ -66,16 +47,8 @@ interface StoreSchema {
   /** Desired shield state. The daemon reads this from config.json and converges the OS to it. */
   shieldActive: boolean;
   blockedDomains: string[];
-  delayedDomains: string[];
-  blockedPaths: Record<string, string[]>; // { domain: [path patterns] }
   allowances: Allowance[];
-  delaySessions: DelaySession[];
   hardLockouts: HardLockout[];
-  enabledCategories: string[]; // which block categories are active
-  profile: UserProfile | null;
-  exceptions: string[];  // domains exempted during onboarding
-  cooldowns: CooldownConfig[];
-  onboardingComplete: boolean;
   retreat: RetreatConfig;
 }
 
@@ -243,21 +216,11 @@ export function domainsForCategories(categories: string[]): string[] {
   return [...all];
 }
 
-const DEFAULT_DELAYED: string[] = ['gmail.com', 'mail.google.com', 'are.na'];
-
 const DEFAULTS: StoreSchema = {
   shieldActive: true,
   blockedDomains: domainsForCategories(DEFAULT_CATEGORIES),
-  delayedDomains: DEFAULT_DELAYED,
-  blockedPaths: {},
   allowances: [],
-  delaySessions: [],
   hardLockouts: [],
-  enabledCategories: DEFAULT_CATEGORIES,
-  profile: null,
-  exceptions: [],
-  cooldowns: [],
-  onboardingComplete: false,
   retreat: {
     enabled: false,
     endDate: '',
@@ -278,13 +241,15 @@ function ensureConfigDir(): void {
 
 function load(): void {
   ensureConfigDir();
+  if (!fs.existsSync(CONFIG_FILE)) return;
+  const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-      data = { ...DEFAULTS, ...JSON.parse(raw) };
-    }
+    data = { ...DEFAULTS, ...JSON.parse(raw) };
   } catch (e) {
-    console.error('Failed to load config:', e);
+    // Keep the unreadable file before the next save replaces it with defaults.
+    const copy = `${CONFIG_FILE}.corrupt-${Date.now()}`;
+    fs.copyFileSync(CONFIG_FILE, copy);
+    console.error(`config.json is not valid JSON (${e instanceof Error ? e.message : e}); saved a copy to ${copy} and started from defaults`);
     data = { ...DEFAULTS };
   }
 }
@@ -420,123 +385,7 @@ export function getAllowanceRemaining(domain: string): number {
   return Math.ceil((allowance.expiresAt - now) / 60000);
 }
 
-export function isDomainDelayed(domain: string): boolean {
-  const normalized = normalizeDomain(domain);
-  const delayed = store.get('delayedDomains', []);
-  return delayed.some(d => matchesDomain(normalized, d));
-}
-
-export function getDelaySeconds(domain: string): number {
-  const normalized = normalizeDomain(domain);
-  const sessions = store.get('delaySessions', []);
-  const today = new Date().toISOString().split('T')[0];
-  let session = sessions.find(s => s.domain === normalized);
-  if (session && session.lastResetDate !== today) {
-    session.accessCount = 0;
-    session.lastResetDate = today;
-  }
-  const count = session?.accessCount || 0;
-  return Math.min(10 * Math.pow(2, count), 160);
-}
-
-export function recordDelayAccess(domain: string): void {
-  const normalized = normalizeDomain(domain);
-  const sessions = store.get('delaySessions', []);
-  const today = new Date().toISOString().split('T')[0];
-  const now = Date.now();
-  const existingIndex = sessions.findIndex(s => s.domain === normalized);
-
-  if (existingIndex >= 0) {
-    const session = sessions[existingIndex];
-    if (session.lastResetDate !== today) {
-      session.accessCount = 1;
-      session.lastResetDate = today;
-    } else {
-      session.accessCount += 1;
-    }
-    session.lastAccess = now;
-    sessions[existingIndex] = session;
-  } else {
-    sessions.push({
-      domain: normalized,
-      lastAccess: now,
-      accessCount: 1,
-      lastResetDate: today,
-    });
-  }
-  store.set('delaySessions', sessions);
-}
-
-export function isInActiveSession(domain: string): boolean {
-  const normalized = normalizeDomain(domain);
-  const sessions = store.get('delaySessions', []);
-  const now = Date.now();
-  const SESSION_DURATION = 15 * 60 * 1000;
-  const session = sessions.find(s => s.domain === normalized);
-  if (!session) return false;
-  return (now - session.lastAccess) < SESSION_DURATION;
-}
-
-export function updateSessionAccess(domain: string): void {
-  const normalized = normalizeDomain(domain);
-  const sessions = store.get('delaySessions', []);
-  const session = sessions.find(s => s.domain === normalized);
-  if (session) {
-    session.lastAccess = Date.now();
-    store.set('delaySessions', sessions);
-  }
-}
-
-export function getDelayedDomains(): string[] {
-  return store.get('delayedDomains', []);
-}
-
-export function addDelayedDomain(domain: string): void {
-  const normalized = normalizeDomain(domain);
-  const delayed = store.get('delayedDomains', []);
-  if (!delayed.includes(normalized)) {
-    store.set('delayedDomains', [...delayed, normalized]);
-  }
-}
-
-export function removeDelayedDomain(domain: string): void {
-  const normalized = normalizeDomain(domain);
-  const delayed = store.get('delayedDomains', []);
-  store.set('delayedDomains', delayed.filter(d => d !== normalized));
-}
-
-// Path blocking functions
-
-export function getBlockedPaths(): Record<string, string[]> {
-  return store.get('blockedPaths', {});
-}
-
-export function addBlockedPath(domain: string, pathPattern: string): void {
-  const normalized = normalizeDomain(domain);
-  const paths = store.get('blockedPaths', {});
-  if (!paths[normalized]) {
-    paths[normalized] = [];
-  }
-  if (!paths[normalized].includes(pathPattern)) {
-    paths[normalized].push(pathPattern);
-  }
-  store.set('blockedPaths', paths);
-}
-
-export function removeBlockedPath(domain: string, pathPattern: string): void {
-  const normalized = normalizeDomain(domain);
-  const paths = store.get('blockedPaths', {});
-  if (paths[normalized]) {
-    paths[normalized] = paths[normalized].filter((p: string) => p !== pathPattern);
-    if (paths[normalized].length === 0) {
-      delete paths[normalized];
-    }
-    store.set('blockedPaths', paths);
-  }
-}
-
 // Hard lockout functions — config-driven domain locks with expiry dates.
-// Replaces hardcoded LOCKED_DOMAINS in server.ts and mcp.ts.
 
 export function getHardLockouts(): HardLockout[] {
   return store.get('hardLockouts', []);
@@ -547,12 +396,6 @@ export function addHardLockout(domain: string, until: string): void {
   const lockouts = store.get('hardLockouts', []);
   const filtered = lockouts.filter(l => normalizeDomain(l.domain) !== normalized);
   store.set('hardLockouts', [...filtered, { domain: normalized, until }]);
-}
-
-export function removeHardLockout(domain: string): void {
-  const normalized = normalizeDomain(domain);
-  const lockouts = store.get('hardLockouts', []);
-  store.set('hardLockouts', lockouts.filter(l => normalizeDomain(l.domain) !== normalized));
 }
 
 /** Check if a domain is hard-locked (locked and lockout period hasn't expired). */
@@ -566,6 +409,21 @@ export function isHardLocked(domain: string): boolean {
     if (!matches) return false;
     return now < new Date(l.until);
   });
+}
+
+/**
+ * The active lockout a grant for `domain` would touch: one on the domain or a
+ * parent of it, or one on a subdomain the grant would also open
+ * (a grant for google.com covers a locked news.google.com).
+ */
+export function lockoutCoveredBy(domain: string): HardLockout | null {
+  const normalized = normalizeDomain(domain);
+  const now = new Date();
+  return store.get('hardLockouts', []).find(l => {
+    const lockDomain = normalizeDomain(l.domain);
+    const overlaps = matchesDomain(normalized, lockDomain) || matchesDomain(lockDomain, normalized);
+    return overlaps && now < new Date(l.until);
+  }) ?? null;
 }
 
 /** Get the lockout expiry date for a domain, or null if not locked. */
@@ -586,57 +444,6 @@ export function getActiveHardLockouts(): HardLockout[] {
   const lockouts = store.get('hardLockouts', []);
   const now = new Date();
   return lockouts.filter(l => now < new Date(l.until));
-}
-
-/** Get enabled category names. */
-export function getEnabledCategories(): string[] {
-  return store.get('enabledCategories', DEFAULT_CATEGORIES);
-}
-
-// Setup / onboarding functions — used by the native macOS app during first run.
-
-export function getProfile(): UserProfile | null {
-  return store.get('profile', null);
-}
-
-export function setProfile(profile: UserProfile): void {
-  store.set('profile', profile);
-}
-
-export function getExceptions(): string[] {
-  return store.get('exceptions', []);
-}
-
-export function setExceptions(exceptions: string[]): void {
-  store.set('exceptions', exceptions);
-}
-
-export function getCooldowns(): CooldownConfig[] {
-  return store.get('cooldowns', []);
-}
-
-export function setCooldowns(cooldowns: CooldownConfig[]): void {
-  store.set('cooldowns', cooldowns);
-}
-
-export function isOnboardingComplete(): boolean {
-  return store.get('onboardingComplete', false);
-}
-
-export function setOnboardingComplete(complete: boolean): void {
-  store.set('onboardingComplete', complete);
-}
-
-/** Configure enabled categories and rebuild the blocklist accordingly. */
-export function setEnabledCategories(categories: string[], exceptions: string[] = []): void {
-  store.set('enabledCategories', categories);
-  store.set('exceptions', exceptions);
-
-  // Rebuild blocklist from categories minus exceptions
-  const domains = domainsForCategories(categories);
-  const normalized = exceptions.map(e => normalizeDomain(e));
-  const filtered = domains.filter(d => !normalized.includes(normalizeDomain(d)));
-  store.set('blockedDomains', filtered);
 }
 
 // Retreat mode — Mac app allowlist enforced during scheduled windows.
