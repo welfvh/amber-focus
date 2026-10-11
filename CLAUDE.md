@@ -13,8 +13,8 @@ Three layers:
 2. **Tabs** — every 10 s the server closes any open tab on an effectively blocked domain,
    even one that loaded via DoH or a cached IP. It reloads a granted domain's tabs, and
    closes them again on revoke or expiry (server, as the user, via JXA).
-3. **Apps** — retreat mode: the Swift `retreat-enforcer` quits apps outside an allowlist
-   during scheduled windows.
+3. **Apps** — retreat mode: the Swift `retreat-enforcer` asks apps outside an allowlist to
+   quit during scheduled windows. It never force-quits, so no unsaved work is lost.
 
 ## Architecture
 
