@@ -65,3 +65,20 @@ describe('save', () => {
     expect(saved.blockedDomains).toContain('reddit.com');
   });
 });
+
+describe('save failure', () => {
+  const dir = () => path.join(home, '.config', 'amber-focus');
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(dir(), 'config.json'), 'utf8'));
+
+  it.skipIf(process.getuid?.() === 0)('throws and leaves memory and file unchanged', () => {
+    store.grantAllowance('savefail.com', 5, 'test');
+    fs.chmodSync(dir(), 0o500);
+    try {
+      expect(() => store.revokeAllowance('savefail.com')).toThrow();
+    } finally {
+      fs.chmodSync(dir(), 0o700);
+    }
+    expect(store.getActiveAllowances().map(a => a.domain)).toContain('savefail.com');
+    expect(onDisk().allowances.map((a: { domain: string }) => a.domain)).toContain('savefail.com');
+  });
+});

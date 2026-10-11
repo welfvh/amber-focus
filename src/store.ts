@@ -254,16 +254,16 @@ function load(): void {
   }
 }
 
-/** Write-then-rename: the daemon polls this file and must never see a half-written one. */
-function save(): void {
+/**
+ * Write-then-rename: the daemon polls this file and must never see a
+ * half-written one. Throws on failure: the daemon converges from this file,
+ * so a change that is not on disk has not happened.
+ */
+function save(next: StoreSchema): void {
   ensureConfigDir();
-  try {
-    const tmp = CONFIG_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs.renameSync(tmp, CONFIG_FILE);
-  } catch (e) {
-    console.error('Failed to save config:', e);
-  }
+  const tmp = CONFIG_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+  fs.renameSync(tmp, CONFIG_FILE);
 }
 
 // Initialize on module load
@@ -274,9 +274,12 @@ export const store = {
   get<K extends keyof StoreSchema>(key: K, defaultValue?: StoreSchema[K]): StoreSchema[K] {
     return data[key] ?? defaultValue ?? DEFAULTS[key];
   },
+  /** Persist first, then update memory: a failed write throws and changes nothing. */
   set<K extends keyof StoreSchema>(key: K, value: StoreSchema[K]): void {
-    data[key] = value;
-    save();
+    const next = { ...data };
+    next[key] = value;
+    save(next);
+    data = next;
   },
 };
 
