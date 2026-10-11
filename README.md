@@ -118,7 +118,7 @@ When a grant is active with vigilant mode:
 
 1. Every 15 s the server reads the tabs open on the granted site (URL and title; no screenshots).
 2. Claude Haiku judges each new page against the declared intent: on task, navigation (home page, search, login) or off task.
-3. An off-task tab closes at once and counts as a strike. A navigation page may stay open for 2 minutes.
+3. An off-task page closes at once and counts as a strike (the same page in several tabs counts once). A navigation page may stay open for 2 minutes.
 4. 3 strikes end the grant. So do 3 checks in a row that cannot read the tabs or reach the model: monitoring fails closed.
 5. A notification names every closed tab and the end of the grant. Everything is logged to `~/.config/amber-focus/vigilant-log.jsonl`.
 
