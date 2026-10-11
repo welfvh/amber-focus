@@ -32,8 +32,6 @@ function makeDeps() {
     blockDomain: vi.fn(async () => ['1.2.3.4']),
   };
   const browser = {
-    sweepBlockedTabs: vi.fn(async () => 0),
-    reloadTabs: vi.fn(async () => 1),
     flushBrowserDnsCache: vi.fn(async () => true),
   };
   let now = 1_000_000;
@@ -67,7 +65,7 @@ describe('Reconciler', () => {
     expect(d.pf.updateStaticRules).toHaveBeenCalledWith(true);
     expect(d.pf.refreshDynamicRules).toHaveBeenCalledWith(['a.com', 'b.com'], true);
     expect(d.pf.blockDomain).not.toHaveBeenCalled(); // fresh install: no prior section to diff against
-    expect(d.browser.reloadTabs).not.toHaveBeenCalled();
+    expect(d.browser.flushBrowserDnsCache).not.toHaveBeenCalled();
 
     const s2 = await d.r.tick('timer');
     expect(s2.converged).toBe(true);
@@ -75,7 +73,7 @@ describe('Reconciler', () => {
     expect(d.pf.refreshDynamicRules).toHaveBeenCalledTimes(1);
   });
 
-  it('applies a grant: drops the domain from hosts, reloads its tabs, and re-blocks on expiry', async () => {
+  it('applies a grant: drops the domain from hosts, flushes browser DNS, and re-blocks on expiry', async () => {
     d.setConfig({ blockedDomains: ['a.com', 'b.com'], allowances: [] });
     await d.r.tick('boot');
 
@@ -86,7 +84,6 @@ describe('Reconciler', () => {
     expect(d.files.get(HOSTS)).not.toContain('0.0.0.0 a.com');
     expect(d.files.get(HOSTS)).toContain('0.0.0.0 b.com');
     expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
-    expect(d.browser.reloadTabs).toHaveBeenCalledWith(['a.com']);
     expect(d.pf.blockDomain).not.toHaveBeenCalled();
 
     d.advance(120_000);
@@ -94,7 +91,6 @@ describe('Reconciler', () => {
     expect(expired.domainsBlocked).toBe(2);
     expect(d.files.get(HOSTS)).toContain('0.0.0.0 a.com');
     expect(d.pf.blockDomain).toHaveBeenCalledWith('a.com');
-    expect(d.browser.sweepBlockedTabs).toHaveBeenCalledWith(['a.com']);
   });
 
   it('keeps the OS untouched and reports the error when config.json is unreadable', async () => {
@@ -129,7 +125,7 @@ describe('Reconciler', () => {
     expect(s.shieldActive).toBe(false);
     expect(d.files.get(HOSTS)).toBe('127.0.0.1 localhost\n');
     expect(d.pf.updateStaticRules).toHaveBeenLastCalledWith(false);
-    expect(d.browser.reloadTabs).toHaveBeenCalledWith(['a.com']);
+    expect(d.browser.flushBrowserDnsCache).toHaveBeenCalledTimes(1);
   });
 
   it('flags allowed domains that the legacy section still blocks', async () => {
@@ -146,9 +142,22 @@ describe('Reconciler', () => {
     const s = await d.r.tick('boot');
     expect(s.converged).toBe(true);
     expect(d.files.get(HOSTS)).toContain('# Domains: a.com');
-    expect(d.browser.reloadTabs).not.toHaveBeenCalled();
     expect(d.browser.flushBrowserDnsCache).not.toHaveBeenCalled();
     expect(d.pf.blockDomain).not.toHaveBeenCalled();
+  });
+
+  it('never writes an invalid domain to hosts, and an invalid allowance opens nothing', async () => {
+    d.setConfig({
+      blockedDomains: ['a.com', 'evil.com\n1.2.3.4 bank.com', '1.2.3.4', 'localhost', 'b c.com', '"x".com'],
+      allowances: [{ domain: 'a.com\n', expiresAt: 2_000_000 }],
+    });
+    const s = await d.r.tick('boot');
+    expect(s.converged).toBe(true);
+    expect(s.domainsBlocked).toBe(1);
+    const hosts = d.files.get(HOSTS)!;
+    expect(hosts).toContain('0.0.0.0 a.com');
+    expect(hosts.slice(hosts.indexOf("# BEGIN"))).not.toMatch(/bank\.com|1\.2\.3\.4|localhost|b c\.com|"x"/);
+    expect(d.pf.refreshDynamicRules).toHaveBeenCalledWith(['a.com'], true);
   });
 
   it('serializes overlapping ticks so each caller sees a full pass', async () => {

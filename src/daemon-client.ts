@@ -91,9 +91,9 @@ export async function getDaemonStatus(): Promise<DaemonStatus | null> {
 }
 
 /** Ask the daemon to converge now. Returns its status after the pass, or null when unreachable. */
-export async function reconcile(configPath: string, reason: string): Promise<DaemonStatus | null> {
+export async function reconcile(reason: string): Promise<DaemonStatus | null> {
   try {
-    return await rpcCall<DaemonStatus>('reconcile', { configPath, reason }, RECONCILE_TIMEOUT_MS);
+    return await rpcCall<DaemonStatus>('reconcile', { reason: reason.slice(0, 200) }, RECONCILE_TIMEOUT_MS);
   } catch (err) {
     logError(`reconcile (${reason}) failed:`, err);
     return null;

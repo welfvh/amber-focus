@@ -3,6 +3,7 @@ import {
   DesiredConfigSchema,
   effectiveBlockedDomains,
   desiredStateFromConfig,
+  invalidConfigDomains,
   renderHostsSection,
   extractManagedSection,
   parseManagedDomains,
@@ -140,5 +141,16 @@ describe('hostsBlocks', () => {
     expect(performance.now() - t0).toBeLessThan(2000);
     expect(index.lookup('h123.example')).toBe('other');
     expect(index.lookup('reddit.com')).toBe('managed');
+  });
+});
+
+describe('invalid config entries', () => {
+  it('drops non-hostnames from the effective blocklist and ignores invalid allowances', () => {
+    expect(effectiveBlockedDomains(['a.com', 'a.com\n0.0.0.0 b.com', '10.0.0.1', 'com'], [{ domain: 'a.com ', expiresAt: NOW + 1 }], NOW))
+      .toEqual(['a.com']);
+  });
+  it('lists them for the daemon log', () => {
+    const cfg = DesiredConfigSchema.parse({ blockedDomains: ['a.com', 'x y.com'], allowances: [{ domain: '', expiresAt: 1 }] });
+    expect(invalidConfigDomains(cfg)).toEqual(['x y.com', '']);
   });
 });

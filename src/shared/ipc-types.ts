@@ -41,10 +41,9 @@ export const RPC_ERRORS = {
 
 // --- Daemon method schemas ---
 
-/** reconcile — run one reconcile pass now. `configPath` announces where config.json lives. */
+/** reconcile — run one reconcile pass now. The daemon finds config.json itself. */
 export const ReconcileParamsSchema = z.object({
-  configPath: z.string().optional(),
-  reason: z.string().optional(),
+  reason: z.string().max(200).optional(),
 });
 
 /** flush_dns — flush system DNS cache. */

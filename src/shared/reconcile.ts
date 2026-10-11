@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { normalizeDomain, collectAllDomainsWithVariants } from './domains.js';
+import { normalizeDomain, collectAllDomainsWithVariants, isValidHostname } from './domains.js';
 
 export const MARKER_START = '# BEGIN AMBER FOCUS BLOCK';
 export const MARKER_END = '# END AMBER FOCUS BLOCK';
@@ -38,23 +38,38 @@ interface AllowanceLike {
   expiresAt: number;
 }
 
-/** Blocklist minus domains (and subdomains) covered by an unexpired allowance. */
+/**
+ * Blocklist minus domains (and subdomains) covered by an unexpired allowance.
+ * Entries that are not plain hostnames are dropped: they never reach /etc/hosts
+ * or pf. An invalid allowance is ignored, so its domain stays blocked.
+ */
 export function effectiveBlockedDomains(
   blocked: string[],
   allowances: AllowanceLike[],
   now: number,
 ): string[] {
-  const allowed = allowances
-    .filter(a => a.expiresAt > now)
-    .map(a => normalizeDomain(a.domain));
+  const allowed = activeAllowances(allowances, now);
   const out = new Set<string>();
   for (const raw of blocked) {
     const domain = normalizeDomain(raw);
-    if (!domain) continue;
+    if (!isValidHostname(domain)) continue;
     const covered = allowed.some(a => domain === a || domain.endsWith('.' + a));
     if (!covered) out.add(domain);
   }
   return [...out].sort();
+}
+
+function activeAllowances(allowances: AllowanceLike[], now: number): string[] {
+  return allowances
+    .filter(a => a.expiresAt > now)
+    .map(a => normalizeDomain(a.domain))
+    .filter(isValidHostname);
+}
+
+/** Config entries that are not plain hostnames (blocklist and allowances). */
+export function invalidConfigDomains(cfg: DesiredConfig): string[] {
+  const raw = [...cfg.blockedDomains, ...cfg.allowances.map(a => a.domain)];
+  return raw.filter(d => !isValidHostname(normalizeDomain(d)));
 }
 
 export function desiredStateFromConfig(cfg: DesiredConfig, now: number): DesiredState {
@@ -67,9 +82,7 @@ export function desiredStateFromConfig(cfg: DesiredConfig, now: number): Desired
 
 /** Active (unexpired) allowance domains, normalized. */
 export function activeAllowanceDomains(cfg: DesiredConfig, now: number): string[] {
-  return cfg.allowances
-    .filter(a => a.expiresAt > now)
-    .map(a => normalizeDomain(a.domain));
+  return activeAllowances(cfg.allowances, now);
 }
 
 // --- /etc/hosts managed section ---

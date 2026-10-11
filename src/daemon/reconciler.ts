@@ -5,7 +5,9 @@
  * it reads config.json and /etc/hosts, computes what the managed hosts section
  * must contain, rewrites it only when it differs, refreshes pf on change, and
  * applies the side effects of the diff between what was blocked before and
- * what is blocked now (enforce newly blocked, release newly allowed).
+ * what is blocked now (kill connections to newly blocked domains, flush the
+ * browser DNS cache for newly allowed ones). Browser tabs are the server's job:
+ * it runs as the user, and root never drives a browser.
  *
  * The previous state is read back from the hosts file itself, so a daemon
  * restart never loses track of what it last applied.
@@ -29,6 +31,7 @@ import {
   replaceManagedSection,
   diffDomains,
   buildHostsIndex,
+  invalidConfigDomains,
   type DesiredState,
   type HostsIndex,
 } from '../shared/reconcile.js';
@@ -64,6 +67,8 @@ export class Reconciler {
   private lastApplied: DesiredState | null = null;
   /** Index of the last hosts content seen; rebuilt only when the file changes. */
   private hostsIndex: { content: string; index: HostsIndex } | null = null;
+  /** Invalid config entries last reported, so the log names each change once. */
+  private lastInvalid = '';
   private status: ReconcileStatus = {
     configPath: null,
     shieldActive: false,
@@ -100,11 +105,16 @@ export class Reconciler {
   private async pass(reason: string): Promise<ReconcileStatus> {
     const now = this.now();
     try {
-      if (!this.configPath) throw new Error('config path unknown — waiting for the server to announce it');
+      if (!this.configPath) throw new Error('config path unknown — no user logged in at the console');
       const raw = await this.sys.readFile(this.configPath);
       const parsed = DesiredConfigSchema.safeParse(JSON.parse(raw));
       if (!parsed.success) throw new Error(`config.json invalid: ${parsed.error.message}`);
       const cfg = parsed.data;
+      const invalid = invalidConfigDomains(cfg);
+      if (invalid.join(' ') !== this.lastInvalid) {
+        this.lastInvalid = invalid.join(' ');
+        if (invalid.length > 0) this.log(`ignoring ${invalid.length} invalid domain entries: ${JSON.stringify(invalid)}`);
+      }
       const desired = desiredStateFromConfig(cfg, now);
 
       const before = await this.sys.readFile(this.hostsPath);
@@ -126,7 +136,7 @@ export class Reconciler {
       }
 
       // Unknown previous state (fresh install, old section format): converge
-      // hosts and pf only; no tab or connection side effects to derive.
+      // hosts and pf only; no connection side effects to derive.
       const diff = prevDomains ? diffDomains(prevDomains, desired.blockedDomains) : { added: [], removed: [] };
       if (diff.added.length > 0) {
         if (diff.added.length <= MAX_INDIVIDUAL_ENFORCE) {
@@ -135,19 +145,12 @@ export class Reconciler {
             this.log(`enforced ${domain} (${ips.length} IPs)`);
           }
         }
-        const closed = await this.browser.sweepBlockedTabs(diff.added);
-        this.log(`newly blocked: ${diff.added.join(', ')} (tabs closed: ${closed})`);
+        this.log(`newly blocked: ${diff.added.join(', ')}`);
       }
       if (diff.removed.length > 0) {
         await this.browser.flushBrowserDnsCache();
         await this.sleep(BROWSER_DNS_SETTLE_MS);
-        const reloaded = await this.browser.reloadTabs(diff.removed);
-        this.log(`newly allowed: ${diff.removed.join(', ')} (tabs reloaded: ${reloaded})`);
-      }
-
-      if (desired.shieldActive && desired.blockedDomains.length > 0) {
-        const swept = await this.browser.sweepBlockedTabs(desired.blockedDomains);
-        if (swept > 0) this.log(`tab sweep closed ${swept} blocked tab(s)`);
+        this.log(`newly allowed: ${diff.removed.join(', ')}`);
       }
 
       const after = hostsChanged ? await this.sys.readFile(this.hostsPath) : before;

@@ -9,8 +9,10 @@
  * Key principle: default state is BLOCKED. If anything goes wrong, the OS
  * keeps its current blocks and the status reports the error.
  *
- * Config path: --config <path>, AMBER_FOCUS_CONFIG, the path last announced
- * by the server (persisted in /var/db/amber-focus), in that order.
+ * Config path: --config <path>, AMBER_FOCUS_CONFIG, or the console user's
+ * ~/.config/amber-focus/config.json, in that order. No client can change it:
+ * the socket is world-writable, so a path taken over RPC would let any local
+ * process point root at any file.
  *
  * Start: sudo node daemon/daemon.cjs (esbuild bundle of this file)
  * Socket: /tmp/amberfocus.sock
@@ -29,8 +31,6 @@ import { flushDnsCache } from './dns.js';
 import type { DaemonStatus, FlushDnsResult, RestartResult } from '../shared/ipc-types.js';
 
 const SOCKET_PATH = '/tmp/amberfocus.sock';
-const STATE_DIR = '/var/db/amber-focus';
-const CONFIG_PATH_FILE = path.join(STATE_DIR, 'config-path');
 const TICK_INTERVAL_MS = 10_000;
 const CONFIG_POLL_MS = 1_000;
 const startTime = Date.now();
@@ -55,22 +55,13 @@ function argConfigPath(): string | null {
   return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null;
 }
 
-function loadPersistedConfigPath(): string | null {
-  try {
-    const p = fs.readFileSync(CONFIG_PATH_FILE, 'utf8').trim();
-    return p || null;
-  } catch {
-    return null;
-  }
-}
-
-function persistConfigPath(p: string): void {
-  try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_PATH_FILE, p + '\n');
-  } catch (err) {
-    log(`could not persist config path: ${err instanceof Error ? err.message : String(err)}`);
-  }
+/** config.json of the user logged in at the console; null at the login window. */
+async function consoleUserConfigPath(): Promise<string | null> {
+  const uid = fs.statSync('/dev/console').uid;
+  if (uid === 0) return null;
+  const out = await sys.execSilent('/usr/bin/dscacheutil', ['-q', 'user', '-a', 'uid', String(uid)]);
+  const home = out?.stdout.match(/^dir: (\/.+)$/m)?.[1];
+  return home ? path.join(home, '.config', 'amber-focus', 'config.json') : null;
 }
 
 let watched: string | null = null;
@@ -89,14 +80,28 @@ function setConfigPath(p: string, source: string): void {
   const resolved = path.resolve(p);
   if (reconciler.configPath === resolved) return;
   reconciler.configPath = resolved;
-  persistConfigPath(resolved);
   watchConfig(resolved);
   log(`config path set from ${source}: ${resolved}`);
 }
 
-const initial = argConfigPath() ?? process.env.AMBER_FOCUS_CONFIG ?? loadPersistedConfigPath();
-if (initial) setConfigPath(initial, argConfigPath() ? '--config' : process.env.AMBER_FOCUS_CONFIG ? 'env' : 'persisted');
-else log('config path unknown until the server announces it');
+/** Resolve the config path once; until it is known (login window), every tick retries. */
+async function ensureConfigPath(): Promise<void> {
+  if (reconciler.configPath) return;
+  const fromArg = argConfigPath();
+  if (fromArg) return setConfigPath(fromArg, '--config');
+  if (process.env.AMBER_FOCUS_CONFIG) return setConfigPath(process.env.AMBER_FOCUS_CONFIG, 'env');
+  const fromConsole = await consoleUserConfigPath();
+  if (fromConsole) setConfigPath(fromConsole, 'console user');
+}
+
+async function tick(reason: string) {
+  try {
+    await ensureConfigPath();
+  } catch (err) {
+    log(`config path lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return reconciler.tick(reason);
+}
 
 // --- RPC handlers ---
 
@@ -105,9 +110,8 @@ function daemonStatus(): DaemonStatus {
 }
 
 rpc.register('reconcile', async (params): Promise<DaemonStatus> => {
-  const { configPath, reason } = params as { configPath?: string; reason?: string };
-  if (configPath) setConfigPath(configPath, 'server');
-  await reconciler.tick(reason ?? 'request');
+  const { reason } = params as { reason?: string };
+  await tick(reason ?? 'request');
   return daemonStatus();
 });
 
@@ -158,8 +162,8 @@ server.listen(SOCKET_PATH, () => {
 
 // --- Reconcile loop ---
 
-void reconciler.tick('boot');
-setInterval(() => void reconciler.tick('timer'), TICK_INTERVAL_MS);
+void tick('boot');
+setInterval(() => void tick('timer'), TICK_INTERVAL_MS);
 
 process.on('unhandledRejection', (err) => {
   log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);

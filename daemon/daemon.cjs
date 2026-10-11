@@ -74,6 +74,13 @@ var MacOSSystem = class {
 function normalizeDomain(domain2) {
   return domain2.toLowerCase().replace(/^www\./, "");
 }
+var LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+function isValidHostname(host) {
+  if (typeof host !== "string" || host.length === 0 || host.length > 253) return false;
+  const labels = host.split(".");
+  if (labels.length < 2 || !labels.every((l) => LABEL.test(l))) return false;
+  return !/^[0-9]+$/.test(labels[labels.length - 1]);
+}
 function collectAllDomainsWithVariants(domains) {
   const all = /* @__PURE__ */ new Set();
   for (const domain2 of domains) {
@@ -360,91 +367,13 @@ block return out quick proto tcp to 208.75.76.0/22
 }
 
 // src/daemon/browser.ts
-var BROWSERS = ["Safari", "Arc", "Google Chrome"];
 var CHROMIUM_NETWORK_PATTERNS = [
   "Google Chrome Helper.*network\\.mojom\\.NetworkService",
   "Arc Helper.*network\\.mojom\\.NetworkService"
 ];
-function domainList(domains) {
-  return domains.map((d) => `"${d.replace(/"/g, '\\"').toLowerCase()}"`).join(", ");
-}
-function tabScript(browser2, domains, action) {
-  return `tell application "${browser2}"
-    set targetDomains to {${domainList(domains)}}
-    set matchCount to 0
-    try
-      repeat with w in every window
-        set matched to {}
-        repeat with t in (every tab of w)
-          try
-            set u to URL of t
-            set host to ""
-            set schemeIdx to offset of "://" in u
-            if schemeIdx > 0 then
-              set rest to text (schemeIdx + 3) thru -1 of u
-              set slashIdx to offset of "/" in rest
-              if slashIdx > 0 then
-                set host to text 1 thru (slashIdx - 1) of rest
-              else
-                set host to rest
-              end if
-              set colonIdx to offset of ":" in host
-              if colonIdx > 0 then
-                set host to text 1 thru (colonIdx - 1) of host
-              end if
-              repeat with d in targetDomains
-                set ds to d as text
-                if host is equal to ds then
-                  set end of matched to t
-                  exit repeat
-                else if host ends with ("." & ds) then
-                  set end of matched to t
-                  exit repeat
-                end if
-              end repeat
-            end if
-          end try
-        end repeat
-        repeat with t in matched
-          try
-            ${action}
-            set matchCount to matchCount + 1
-          end try
-        end repeat
-      end repeat
-    end try
-    return matchCount as text
-  end tell`;
-}
-function reloadAction(browser2) {
-  return browser2 === "Safari" ? "set URL of t to (URL of t)" : "reload t";
-}
 var BrowserManager = class {
   constructor(sys2) {
     this.sys = sys2;
-  }
-  async runAll(scriptFor) {
-    const results = await Promise.allSettled(
-      BROWSERS.map((browser2) => this.sys.execSilent("osascript", ["-e", scriptFor(browser2)]))
-    );
-    let total = 0;
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value !== null) {
-        const n = parseInt(String(r.value.stdout).trim(), 10);
-        if (!isNaN(n)) total += n;
-      }
-    }
-    return total;
-  }
-  /** Close every tab whose host matches any of `domains`. Returns the count. */
-  async sweepBlockedTabs(domains) {
-    if (domains.length === 0) return 0;
-    return this.runAll((b) => tabScript(b, domains, "close t"));
-  }
-  /** Reload every tab whose host matches any of `domains` (after an unblock). */
-  async reloadTabs(domains) {
-    if (domains.length === 0) return 0;
-    return this.runAll((b) => tabScript(b, domains, reloadAction(b)));
   }
   /** Flush Chromium-based browser DNS caches by killing their network service processes. */
   async flushBrowserDnsCache() {
@@ -14260,8 +14189,7 @@ var RPC_ERRORS = {
   INTERNAL_ERROR: -32603
 };
 var ReconcileParamsSchema = external_exports.object({
-  configPath: external_exports.string().optional(),
-  reason: external_exports.string().optional()
+  reason: external_exports.string().max(200).optional()
 });
 var FlushDnsParamsSchema = external_exports.object({}).optional();
 var StatusParamsSchema = external_exports.object({}).optional();
@@ -14341,15 +14269,22 @@ var DesiredConfigSchema = external_exports.object({
   shieldActive: external_exports.boolean().default(true)
 });
 function effectiveBlockedDomains(blocked, allowances, now) {
-  const allowed = allowances.filter((a) => a.expiresAt > now).map((a) => normalizeDomain(a.domain));
+  const allowed = activeAllowances(allowances, now);
   const out = /* @__PURE__ */ new Set();
   for (const raw of blocked) {
     const domain2 = normalizeDomain(raw);
-    if (!domain2) continue;
+    if (!isValidHostname(domain2)) continue;
     const covered = allowed.some((a) => domain2 === a || domain2.endsWith("." + a));
     if (!covered) out.add(domain2);
   }
   return [...out].sort();
+}
+function activeAllowances(allowances, now) {
+  return allowances.filter((a) => a.expiresAt > now).map((a) => normalizeDomain(a.domain)).filter(isValidHostname);
+}
+function invalidConfigDomains(cfg) {
+  const raw = [...cfg.blockedDomains, ...cfg.allowances.map((a) => a.domain)];
+  return raw.filter((d) => !isValidHostname(normalizeDomain(d)));
 }
 function desiredStateFromConfig(cfg, now) {
   if (!cfg.shieldActive) return { shieldActive: false, blockedDomains: [] };
@@ -14359,7 +14294,7 @@ function desiredStateFromConfig(cfg, now) {
   };
 }
 function activeAllowanceDomains(cfg, now) {
-  return cfg.allowances.filter((a) => a.expiresAt > now).map((a) => normalizeDomain(a.domain));
+  return activeAllowances(cfg.allowances, now);
 }
 function renderHostsSection(state, generatedAt) {
   if (!state.shieldActive || state.blockedDomains.length === 0) return "";
@@ -14473,6 +14408,8 @@ var Reconciler = class {
   lastApplied = null;
   /** Index of the last hosts content seen; rebuilt only when the file changes. */
   hostsIndex = null;
+  /** Invalid config entries last reported, so the log names each change once. */
+  lastInvalid = "";
   status = {
     configPath: null,
     shieldActive: false,
@@ -14505,11 +14442,16 @@ var Reconciler = class {
   async pass(reason) {
     const now = this.now();
     try {
-      if (!this.configPath) throw new Error("config path unknown \u2014 waiting for the server to announce it");
+      if (!this.configPath) throw new Error("config path unknown \u2014 no user logged in at the console");
       const raw = await this.sys.readFile(this.configPath);
       const parsed = DesiredConfigSchema.safeParse(JSON.parse(raw));
       if (!parsed.success) throw new Error(`config.json invalid: ${parsed.error.message}`);
       const cfg = parsed.data;
+      const invalid = invalidConfigDomains(cfg);
+      if (invalid.join(" ") !== this.lastInvalid) {
+        this.lastInvalid = invalid.join(" ");
+        if (invalid.length > 0) this.log(`ignoring ${invalid.length} invalid domain entries: ${JSON.stringify(invalid)}`);
+      }
       const desired = desiredStateFromConfig(cfg, now);
       const before = await this.sys.readFile(this.hostsPath);
       const currentSection = extractManagedSection(before);
@@ -14534,18 +14476,12 @@ var Reconciler = class {
             this.log(`enforced ${domain2} (${ips.length} IPs)`);
           }
         }
-        const closed = await this.browser.sweepBlockedTabs(diff.added);
-        this.log(`newly blocked: ${diff.added.join(", ")} (tabs closed: ${closed})`);
+        this.log(`newly blocked: ${diff.added.join(", ")}`);
       }
       if (diff.removed.length > 0) {
         await this.browser.flushBrowserDnsCache();
         await this.sleep(BROWSER_DNS_SETTLE_MS);
-        const reloaded = await this.browser.reloadTabs(diff.removed);
-        this.log(`newly allowed: ${diff.removed.join(", ")} (tabs reloaded: ${reloaded})`);
-      }
-      if (desired.shieldActive && desired.blockedDomains.length > 0) {
-        const swept = await this.browser.sweepBlockedTabs(desired.blockedDomains);
-        if (swept > 0) this.log(`tab sweep closed ${swept} blocked tab(s)`);
+        this.log(`newly allowed: ${diff.removed.join(", ")}`);
       }
       const after = hostsChanged ? await this.sys.readFile(this.hostsPath) : before;
       const converged = sectionEquivalent(extractManagedSection(after), wantedSection);
@@ -14589,8 +14525,6 @@ var Reconciler = class {
 
 // src/daemon/index.ts
 var SOCKET_PATH = "/tmp/amberfocus.sock";
-var STATE_DIR = "/var/db/amber-focus";
-var CONFIG_PATH_FILE = import_path.default.join(STATE_DIR, "config-path");
 var TICK_INTERVAL_MS = 1e4;
 var CONFIG_POLL_MS = 1e3;
 var startTime = Date.now();
@@ -14607,21 +14541,12 @@ function argConfigPath() {
   const idx = process.argv.indexOf("--config");
   return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : null;
 }
-function loadPersistedConfigPath() {
-  try {
-    const p = import_fs.default.readFileSync(CONFIG_PATH_FILE, "utf8").trim();
-    return p || null;
-  } catch {
-    return null;
-  }
-}
-function persistConfigPath(p) {
-  try {
-    import_fs.default.mkdirSync(STATE_DIR, { recursive: true });
-    import_fs.default.writeFileSync(CONFIG_PATH_FILE, p + "\n");
-  } catch (err) {
-    log(`could not persist config path: ${err instanceof Error ? err.message : String(err)}`);
-  }
+async function consoleUserConfigPath() {
+  const uid = import_fs.default.statSync("/dev/console").uid;
+  if (uid === 0) return null;
+  const out = await sys.execSilent("/usr/bin/dscacheutil", ["-q", "user", "-a", "uid", String(uid)]);
+  const home = out?.stdout.match(/^dir: (\/.+)$/m)?.[1];
+  return home ? import_path.default.join(home, ".config", "amber-focus", "config.json") : null;
 }
 var watched = null;
 function watchConfig(p) {
@@ -14638,20 +14563,31 @@ function setConfigPath(p, source) {
   const resolved = import_path.default.resolve(p);
   if (reconciler.configPath === resolved) return;
   reconciler.configPath = resolved;
-  persistConfigPath(resolved);
   watchConfig(resolved);
   log(`config path set from ${source}: ${resolved}`);
 }
-var initial = argConfigPath() ?? process.env.AMBER_FOCUS_CONFIG ?? loadPersistedConfigPath();
-if (initial) setConfigPath(initial, argConfigPath() ? "--config" : process.env.AMBER_FOCUS_CONFIG ? "env" : "persisted");
-else log("config path unknown until the server announces it");
+async function ensureConfigPath() {
+  if (reconciler.configPath) return;
+  const fromArg = argConfigPath();
+  if (fromArg) return setConfigPath(fromArg, "--config");
+  if (process.env.AMBER_FOCUS_CONFIG) return setConfigPath(process.env.AMBER_FOCUS_CONFIG, "env");
+  const fromConsole = await consoleUserConfigPath();
+  if (fromConsole) setConfigPath(fromConsole, "console user");
+}
+async function tick(reason) {
+  try {
+    await ensureConfigPath();
+  } catch (err) {
+    log(`config path lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return reconciler.tick(reason);
+}
 function daemonStatus() {
   return { running: true, pid: process.pid, uptime: Date.now() - startTime, ...reconciler.getStatus() };
 }
 rpc.register("reconcile", async (params) => {
-  const { configPath, reason } = params;
-  if (configPath) setConfigPath(configPath, "server");
-  await reconciler.tick(reason ?? "request");
+  const { reason } = params;
+  await tick(reason ?? "request");
   return daemonStatus();
 });
 rpc.register("status", async () => daemonStatus());
@@ -14692,8 +14628,8 @@ server.listen(SOCKET_PATH, () => {
   log(`Daemon listening on ${SOCKET_PATH}`);
   log(`PID: ${process.pid}`);
 });
-void reconciler.tick("boot");
-setInterval(() => void reconciler.tick("timer"), TICK_INTERVAL_MS);
+void tick("boot");
+setInterval(() => void tick("timer"), TICK_INTERVAL_MS);
 process.on("unhandledRejection", (err) => {
   log(`unhandled rejection: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
 });

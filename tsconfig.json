@@ -19,7 +19,6 @@
     "out",
     "dist",
     "src/main",
-    "src/daemon/**",
     "src/**/*.test.ts"
   ]
 }

@@ -10,6 +10,20 @@ export function normalizeDomain(domain: string): string {
   return domain.toLowerCase().replace(/^www\./, '');
 }
 
+const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * True for a plain DNS hostname with at least two labels: lowercase letters,
+ * digits and inner hyphens, no IP literal. Only such names may reach
+ * /etc/hosts, pf, or a browser script — everything else is refused.
+ */
+export function isValidHostname(host: string): boolean {
+  if (typeof host !== 'string' || host.length === 0 || host.length > 253) return false;
+  const labels = host.split('.');
+  if (labels.length < 2 || !labels.every(l => LABEL.test(l))) return false;
+  return !/^[0-9]+$/.test(labels[labels.length - 1]);
+}
+
 /** Check if query matches pattern or is a subdomain of pattern. */
 export function matchesDomain(query: string, pattern: string): boolean {
   const nq = normalizeDomain(query);
