@@ -172,8 +172,9 @@ A grant with `vigilant: true` and an `intent` runs under AI monitoring (`src/vig
 A re-grant without an intent keeps the active grant's intent, so an extension stays monitored.
 
 - Every 15 s: read the tabs on the granted domain (`browser.ts`, URL + title).
-- Each new URL gets one verdict from Claude Haiku 4.5 (structured output): `on_task`,
-  `navigation` (allowed 2 min per URL), or `off_task`. Titles are treated as untrusted data.
+- Each new URL gets one verdict from Claude Haiku 4.5 (structured output), and a new one when
+  its title changes: `on_task`, `navigation` (allowed 2 min per URL), or `off_task`. Titles
+  are treated as untrusted data.
 - Off-task tab → closed at once, one strike, notification. 3 strikes → grant revoked.
 - Fails closed: 3 ticks in a row without tabs or verdicts → grant revoked.
 - Preflight: a vigilant grant is refused (503) when the API key is missing or tabs cannot

@@ -3,7 +3,7 @@
  *
  * Every 15 s the server reads the browser tabs open on the granted domain
  * (URL + title, via browser.ts). Each new URL gets one verdict from Claude
- * Haiku (structured output):
+ * Haiku (structured output), and again when its title changes:
  * - on_task: the page serves the intent. The tab stays.
  * - navigation: home page, search, login. Allowed for NAV_LIMIT_MS per URL,
  *   then handled as off_task (a home feed must not become the session).
@@ -56,11 +56,17 @@ export interface VigilantDeps {
   now(): number;
 }
 
-interface UrlState extends TabVerdict {
+interface PageState extends TabVerdict {
+  url: string;
   title: string;
-  /** Time this URL has been open as a navigation page. */
-  navMs: number;
 }
+
+/** Cache key of a page: a changed title means a new page to judge. */
+function pageKey(t: { url: string; title: string }): string {
+  return JSON.stringify([t.url, t.title]);
+}
+
+const SEVERITY: Record<Verdict, number> = { on_task: 0, navigation: 1, off_task: 2 };
 
 interface Session {
   id: string;
@@ -68,7 +74,10 @@ interface Session {
   intent: string;
   expiresAt: number;
   startedAt: number;
-  urls: Map<string, UrlState>;
+  /** Verdicts by page (URL + title). */
+  pages: Map<string, PageState>;
+  /** Time each URL has been open as a navigation page, across title changes. */
+  navMs: Map<string, number>;
   strikes: number;
   consecutiveFailures: number;
   lastError: string | null;
@@ -103,7 +112,7 @@ export function createVigilant(deps: VigilantDeps) {
     if (s.timer) clearInterval(s.timer);
     if (s.firstTimer) clearTimeout(s.firstTimer);
     sessions.delete(id);
-    console.log(`[vigilant] ${s.domain}: session ${id} stopped (${s.urls.size} URLs judged, ${s.strikes} strikes)`);
+    console.log(`[vigilant] ${s.domain}: session ${id} stopped (${s.pages.size} pages judged, ${s.strikes} strikes)`);
   }
 
   async function end(s: Session, reason: string): Promise<void> {
@@ -148,7 +157,7 @@ export function createVigilant(deps: VigilantDeps) {
         return;
       }
 
-      const fresh = [...new Map(tabs.filter(t => !s.urls.has(t.url)).map(t => [t.url, t])).values()];
+      const fresh = [...new Map(tabs.filter(t => !s.pages.has(pageKey(t))).map(t => [pageKey(t), t])).values()];
       if (fresh.length > 0) {
         let verdicts: TabVerdict[];
         try {
@@ -159,19 +168,27 @@ export function createVigilant(deps: VigilantDeps) {
         }
         if (!live()) return;
         fresh.forEach((t, i) => {
-          s.urls.set(t.url, { ...verdicts[i], title: t.title, navMs: 0 });
+          s.pages.set(pageKey(t), { ...verdicts[i], url: t.url, title: t.title });
           deps.log({ event: 'verdict', sessionId: s.id, domain: s.domain, url: t.url, title: t.title, ...verdicts[i] });
         });
       }
 
-      const toClose = new Map<string, UrlState>();
-      for (const url of new Set(tabs.map(t => t.url))) {
-        const state = s.urls.get(url)!;
+      // Tabs close by URL, so each URL gets the strictest verdict among its open pages.
+      const byUrl = new Map<string, PageState>();
+      for (const t of tabs) {
+        const page = s.pages.get(pageKey(t))!;
+        const prev = byUrl.get(t.url);
+        if (!prev || SEVERITY[page.verdict] > SEVERITY[prev.verdict]) byUrl.set(t.url, page);
+      }
+
+      const toClose = new Map<string, PageState>();
+      for (const [url, state] of byUrl) {
         if (state.verdict === 'navigation') {
-          state.navMs += elapsed;
-          if (state.navMs >= NAV_LIMIT_MS) {
+          const navMs = (s.navMs.get(url) ?? 0) + elapsed;
+          s.navMs.set(url, navMs);
+          if (navMs >= NAV_LIMIT_MS) {
             state.verdict = 'off_task';
-            state.reason = `navigation page open for ${Math.round(state.navMs / 60_000)} min`;
+            state.reason = `navigation page open for ${Math.round(navMs / 60_000)} min`;
           }
         }
         if (state.verdict === 'off_task') toClose.set(url, state);
@@ -211,7 +228,8 @@ export function createVigilant(deps: VigilantDeps) {
     const s: Session = {
       id, domain, intent, expiresAt,
       startedAt: deps.now(),
-      urls: new Map(),
+      pages: new Map(),
+      navMs: new Map(),
       strikes: 0,
       consecutiveFailures: 0,
       lastError: null,
@@ -248,7 +266,7 @@ export function createVigilant(deps: VigilantDeps) {
       consecutiveFailures: s.consecutiveFailures,
       lastError: s.lastError,
       degraded: s.consecutiveFailures > 0,
-      urls: [...s.urls.entries()].slice(-10).map(([url, u]) => ({ url, title: u.title, verdict: u.verdict, reason: u.reason })),
+      urls: [...s.pages.values()].slice(-10).map(p => ({ url: p.url, title: p.title, verdict: p.verdict, reason: p.reason })),
     }));
     return { active: list.length > 0, degraded: list.some(s => s.degraded), sessions: list };
   }

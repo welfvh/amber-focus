@@ -6,7 +6,7 @@ function tab(url: string, title = url): BrowserTab {
   return { browser: 'Google Chrome', url, title, active: true, frontWindow: true, browserFrontmost: true };
 }
 
-/** Fake world: open tabs, scripted verdicts by URL, recorded side effects. */
+/** Fake world: open tabs, scripted verdicts by title or URL, recorded side effects. */
 function world(verdicts: Record<string, TabVerdict['verdict']>) {
   const state = {
     now: 1_000_000,
@@ -35,7 +35,7 @@ function world(verdicts: Record<string, TabVerdict['verdict']>) {
       if (state.judgeError) throw new Error(state.judgeError);
       state.judged.push(...tabs.map(t => t.url));
       state.during.judge?.();
-      return tabs.map(t => ({ verdict: verdicts[t.url] ?? 'off_task', reason: 'test' }));
+      return tabs.map(t => ({ verdict: verdicts[t.title] ?? verdicts[t.url] ?? 'off_task', reason: 'test' }));
     },
     notify: (title) => { state.notes.push(title); },
     log: () => {},
@@ -105,6 +105,43 @@ describe('vigilant tick', () => {
     await v.tick(id);
     expect(state.closed).toEqual(['https://youtube.com/']);
     expect(v.status().sessions[0].strikes).toBe(1);
+    v.stop(id);
+  });
+
+  it('judges a URL again when its title changes', async () => {
+    const url = 'https://youtube.com/watch?v=cats';
+    const { v, id, state } = world({ 'HUF HAUS tour': 'on_task' });
+    state.tabs = [tab(url, 'HUF HAUS tour')]; // a single-page app can show the previous title for a moment
+    await v.tick(id);
+    expect(state.closed).toEqual([]);
+    state.tabs = [tab(url, 'Funny cats')];
+    await v.tick(id);
+    expect(state.judged).toEqual([url, url]);
+    expect(state.closed).toEqual([url]);
+    v.stop(id);
+  });
+
+  it('closes a URL when any of its tabs shows an off-task title', async () => {
+    const url = 'https://youtube.com/watch?v=cats';
+    const { v, id, state } = world({ 'HUF HAUS tour': 'on_task' });
+    state.tabs = [tab(url, 'Funny cats'), tab(url, 'HUF HAUS tour')];
+    await v.tick(id);
+    expect(state.closed).toEqual([url]);
+    expect(v.status().sessions[0].strikes).toBe(1);
+    v.stop(id);
+  });
+
+  it('keeps the navigation clock of a URL across title changes', async () => {
+    const { v, id, state } = world({ 'https://youtube.com/': 'navigation' });
+    let n = 0;
+    state.tabs = [tab('https://youtube.com/', `(${n}) YouTube`)];
+    await v.tick(id);
+    for (let t = 0; t < NAV_LIMIT_MS; t += TICK_MS) {
+      state.now += TICK_MS;
+      state.tabs = [tab('https://youtube.com/', `(${++n}) YouTube`)];
+      await v.tick(id);
+    }
+    expect(state.closed).toEqual(['https://youtube.com/']);
     v.stop(id);
   });
 
