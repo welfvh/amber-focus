@@ -7,14 +7,28 @@
 //   - NSWorkspace launch observer: instant kill on app launch
 //   - 5s ticker: catches apps that were already running when a window started
 //
+// Quitting is polite first: terminate() lets an app ask to save. An app that
+// was launched while the window is active and still runs GRACE_S later is
+// force-quit (it cannot hold unsaved work from before the window). An app that
+// was already running when the window began is never force-quit, so a save
+// prompt it shows cannot lose work; it gets a fresh quit request every minute.
+//
+// AMBER_FOCUS_CONFIG overrides the config path (same variable as the daemon).
+//
 // Build: swiftc retreat-enforcer.swift -o retreat-enforcer -O
 // Run as user LaunchAgent (NOT root — NSWorkspace targets the session user).
 
 import Cocoa
 import Foundation
 
-let CONFIG_PATH = NSString(string: "~/.config/amber-focus/config.json").expandingTildeInPath
-let LOG_PATH = NSString(string: "~/.config/amber-focus/retreat-enforcer.log").expandingTildeInPath
+let CONFIG_PATH = ProcessInfo.processInfo.environment["AMBER_FOCUS_CONFIG"]
+    ?? NSString(string: "~/.config/amber-focus/config.json").expandingTildeInPath
+let LOG_PATH = (CONFIG_PATH as NSString).deletingLastPathComponent + "/retreat-enforcer.log"
+
+/// Seconds a quit request may take before an app launched inside the window is force-quit.
+let GRACE_S: TimeInterval = 10
+/// Seconds between repeated quit requests to an app that predates the window.
+let RETRY_S: TimeInterval = 60
 
 // System-essential bundle IDs that are never killed (would break the OS).
 let SYSTEM_ALLOWLIST: Set<String> = [
@@ -60,7 +74,9 @@ struct RetreatConfig {
 func log(_ msg: String) {
     let ts = ISO8601DateFormatter().string(from: Date())
     let line = "[\(ts)] \(msg)\n"
-    FileManager.default.createFile(atPath: LOG_PATH, contents: nil, attributes: nil)
+    if !FileManager.default.fileExists(atPath: LOG_PATH) {
+        FileManager.default.createFile(atPath: LOG_PATH, contents: nil, attributes: nil)
+    }
     if let fh = FileHandle(forWritingAtPath: LOG_PATH) {
         fh.seekToEndOfFile()
         if let d = line.data(using: .utf8) { fh.write(d) }
@@ -104,7 +120,29 @@ func loadConfig() -> RetreatConfig {
 
 let myPID = ProcessInfo.processInfo.processIdentifier
 
-func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig) {
+/// When the current active stretch began (nil while retreat is inactive).
+var activeSince: Date? = nil
+/// pid → time of the last quit request.
+var quitRequested: [pid_t: Date] = [:]
+
+/// Track the active stretch; returns whether retreat is active now.
+func updateActive(_ config: RetreatConfig, now: Date = Date()) -> Bool {
+    if config.isActiveNow(now) {
+        if activeSince == nil {
+            activeSince = now
+            log("retreat window active")
+        }
+        return true
+    }
+    if activeSince != nil {
+        activeSince = nil
+        quitRequested.removeAll()
+        log("retreat window ended")
+    }
+    return false
+}
+
+func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig, now: Date = Date()) {
     guard app.processIdentifier != myPID else { return }
     guard app.activationPolicy == .regular else { return }
     guard let bundleID = app.bundleIdentifier else { return }
@@ -120,24 +158,37 @@ func killIfDisallowed(_ app: NSRunningApplication, config: RetreatConfig) {
     }
     guard shouldKill else { return }
 
+    let pid = app.processIdentifier
     let name = app.localizedName ?? "?"
-    if app.terminate() {
-        log("terminate \(bundleID) (\(name))")
-    } else {
-        app.forceTerminate()
-        log("forceTerminate \(bundleID) (\(name))")
+    guard let requested = quitRequested[pid] else {
+        quitRequested[pid] = now
+        log("terminate \(bundleID) (\(name))\(app.terminate() ? "" : " — refused")")
+        return
+    }
+    let waited = now.timeIntervalSince(requested)
+    let launchedInWindow = (app.launchDate ?? .distantPast) >= (activeSince ?? .distantFuture)
+    if launchedInWindow && waited >= GRACE_S {
+        quitRequested[pid] = now
+        log("forceTerminate \(bundleID) (\(name)) — still running \(Int(waited))s after quit request\(app.forceTerminate() ? "" : " — failed")")
+    } else if !launchedInWindow && waited >= RETRY_S {
+        quitRequested[pid] = now
+        log("terminate again \(bundleID) (\(name)) — predates the window, never forced")
+        app.terminate()
     }
 }
 
 func sweep() {
     let config = loadConfig()
-    guard config.isActiveNow() else { return }
-    for app in NSWorkspace.shared.runningApplications {
+    guard updateActive(config) else { return }
+    let running = NSWorkspace.shared.runningApplications
+    let live = Set(running.map { $0.processIdentifier })
+    quitRequested = quitRequested.filter { live.contains($0.key) }
+    for app in running {
         killIfDisallowed(app, config: config)
     }
 }
 
-log("retreat-enforcer starting (pid \(myPID))")
+log("retreat-enforcer starting (pid \(myPID), config \(CONFIG_PATH))")
 
 // Launch observer
 NSWorkspace.shared.notificationCenter.addObserver(
@@ -147,7 +198,7 @@ NSWorkspace.shared.notificationCenter.addObserver(
 ) { note in
     guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
     let config = loadConfig()
-    guard config.isActiveNow() else { return }
+    guard updateActive(config) else { return }
     killIfDisallowed(app, config: config)
 }
 
