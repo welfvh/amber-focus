@@ -101,6 +101,13 @@ else
   DOMAINS+=("${ARG}.de" "${ARG}.com")
 fi
 
+# x.com and twitter.com resolve to the same IPs. The pf rules of the one that
+# stays blocked also refuse the other, so a grant for one must cover both.
+case " ${DOMAINS[*]} " in
+  *" x.com "*)       [[ " ${DOMAINS[*]} " == *" twitter.com "* ]] || DOMAINS+=("twitter.com") ;;
+  *" twitter.com "*) DOMAINS+=("x.com") ;;
+esac
+
 # --- grant each ---------------------------------------------------------------
 grant_one() {
   local d="$1"
