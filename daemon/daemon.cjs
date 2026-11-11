@@ -14571,7 +14571,7 @@ function argConfigPath() {
 }
 async function consoleUserConfigPath() {
   const uid = import_fs.default.statSync("/dev/console").uid;
-  if (uid === 0) return null;
+  if (uid < 500) return null;
   const out = await sys.execSilent("/usr/bin/dscacheutil", ["-q", "user", "-a", "uid", String(uid)]);
   const home = out?.stdout.match(/^dir: (\/.+)$/m)?.[1];
   return home ? import_path.default.join(home, ".config", "amber-focus", "config.json") : null;

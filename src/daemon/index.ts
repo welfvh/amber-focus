@@ -58,7 +58,9 @@ function argConfigPath(): string | null {
 /** config.json of the user logged in at the console; null at the login window. */
 async function consoleUserConfigPath(): Promise<string | null> {
   const uid = fs.statSync('/dev/console').uid;
-  if (uid === 0) return null;
+  // At the login window a system account owns /dev/console (_windowserver, uid 88, home /var/empty).
+  // macOS gives human accounts uid 501 and up.
+  if (uid < 500) return null;
   const out = await sys.execSilent('/usr/bin/dscacheutil', ['-q', 'user', '-a', 'uid', String(uid)]);
   const home = out?.stdout.match(/^dir: (\/.+)$/m)?.[1];
   return home ? path.join(home, '.config', 'amber-focus', 'config.json') : null;
