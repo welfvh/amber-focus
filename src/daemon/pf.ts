@@ -206,18 +206,7 @@ block return out quick proto udp to 161.117.0.0/16 port 443
 block return out quick proto tcp to 162.62.0.0/16
 block return out quick proto udp to 162.62.0.0/16 port 443
 
-# Netflix (AS2906) - primary ranges
-block return out quick proto tcp to 23.246.0.0/18
-block return out quick proto tcp to 37.77.184.0/21
-block return out quick proto tcp to 45.57.0.0/17
-block return out quick proto tcp to 64.120.128.0/17
-block return out quick proto tcp to 66.197.128.0/17
-block return out quick proto tcp to 108.175.32.0/20
-block return out quick proto tcp to 185.2.220.0/22
-block return out quick proto tcp to 185.9.188.0/22
-block return out quick proto tcp to 192.173.64.0/18
-block return out quick proto tcp to 198.38.96.0/19
-block return out quick proto tcp to 198.45.48.0/20
-block return out quick proto tcp to 208.75.76.0/22
+# No Netflix (AS2906) IP block: fast.com runs its speed test against the same
+# servers. The netflix.com domain block keeps Netflix itself blocked.
 `;
 }
